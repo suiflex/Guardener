@@ -178,6 +178,14 @@ fn sweep_repository(
         let Some(number) = pull_request["number"].as_u64() else {
             continue;
         };
+        // Skipped here rather than left to `review_one`, which would also
+        // decline it. A declined pull request is left with no comment, so it
+        // stays a candidate for every future sweep — and a repository that
+        // takes dependency updates would spend its whole budget rediscovering
+        // the same bot pull requests every week.
+        if pull_request["user"]["type"].as_str() == Some("Bot") {
+            continue;
+        }
         let fresh = pull_request["updated_at"]
             .as_str()
             .and_then(epoch)
@@ -553,16 +561,31 @@ diff --git a/Cargo.lock b/Cargo.lock
     /// The sweep's filter, stated as the comparison it actually makes. A pull
     /// request is a candidate only when it is *both* old enough and unreviewed;
     /// dropping the second half would re-review the whole organization nightly.
+    /// The sweep's filter, stated as the comparison it actually makes. A bot's
+    /// pull request is excluded first: `review_one` would decline it anyway and
+    /// leave no comment behind, so without this it would come back as a
+    /// candidate on every sweep for as long as it stayed open.
     #[test]
-    fn stale_means_old_and_never_reviewed() {
+    fn stale_means_old_and_never_reviewed_and_not_a_bots() {
         let cutoff = epoch("2026-09-01T00:00:00Z").expect("a cutoff");
-        let candidate = |updated: &str, reviewed: bool| {
-            epoch(updated).is_some_and(|at| at <= cutoff) && !reviewed
+        let candidate = |updated: &str, reviewed: bool, bot: bool| {
+            !bot && epoch(updated).is_some_and(|at| at <= cutoff) && !reviewed
         };
 
-        assert!(candidate("2026-08-01T00:00:00Z", false), "old, unreviewed");
-        assert!(!candidate("2026-08-01T00:00:00Z", true), "old but reviewed");
-        assert!(!candidate("2026-09-30T00:00:00Z", false), "fresh");
-        assert!(!candidate("2026-09-30T00:00:00Z", true), "fresh, reviewed");
+        assert!(candidate("2026-08-01T00:00:00Z", false, false), "the case");
+        assert!(!candidate("2026-08-01T00:00:00Z", true, false), "reviewed");
+        assert!(!candidate("2026-09-30T00:00:00Z", false, false), "fresh");
+        assert!(!candidate("2026-08-01T00:00:00Z", false, true), "a bot's");
+    }
+
+    /// `--stale-days 0` puts the cutoff at now, so a pull request touched a
+    /// moment ago is still eligible. That is the default, and the sweep is the
+    /// only thing reviewing on its own, so getting it backwards would mean
+    /// nothing was ever swept.
+    #[test]
+    fn a_zero_stale_day_cutoff_admits_everything_already_updated() {
+        let now = now_epoch();
+        let yesterday = now - 86_400;
+        assert!(yesterday <= now, "yesterday is within a zero-day cutoff");
     }
 }

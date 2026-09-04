@@ -120,27 +120,12 @@ jobs:
             --base FETCH_HEAD \
             "$@"
 
-      # A second opinion, and only that. `continue-on-error` is the contract in
-      # one line: a model that is slow, wrong, or unreachable must never be the
-      # reason a pull request cannot merge. The gate above decides that.
+      # The model's second opinion used to run here, on every push. It does not
+      # any more: it is asked by name with a `/review` comment, and swept for
+      # weekly by review-sweep.yml. A review nobody asked for, re-run on every
+      # push to every pull request in the organization, was paying for far more
+      # readings than anyone read.
       #
-      # Steps in this job rather than a job of its own, so the binary built a
-      # moment ago is reused instead of compiled a second time on a second
-      # runner.
-      - name: Review
-        continue-on-error: true
-        env:
-          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
-          GUARDENER_MODEL_URL: ${{ secrets.model_url }}
-          GUARDENER_MODEL_KEY: ${{ secrets.model_key }}
-          GUARDENER_MODEL: ${{ secrets.model }}
-        run: |
-          if [ -z "$GUARDENER_MODEL_URL" ]; then
-            echo "No model endpoint configured for this repository; skipping the review."
-            exit 0
-          fi
-          tool/target/release/guardener review \
-            --registry tool/config/repositories.toml \
-            --settings tool/config/review.toml \
-            --repo "${{ github.repository }}" \
-            --pr "${{ github.event.pull_request.number }}"
+      # This job is the gate and only the gate. The model secrets are still
+      # accepted above so that a repository's stub needs no edit when it is
+      # wired up for `/review`.

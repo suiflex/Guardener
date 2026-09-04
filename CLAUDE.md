@@ -56,15 +56,18 @@ Tests are `#[cfg(test)]` modules at the bottom of each `src/*.rs`. No integratio
   already-installed `guardener.yml` could never be rolled out without hand-written PRs.
 - **The daily hygiene schedule never passes `--fix`.** That stays a `workflow_dispatch` a
   person triggers.
-- **`review` can never block a merge.** No check run, own comment marker, and the workflow step
-  carries `continue-on-error`. The gate decides mergeability; the model does not. `review.yml`
-  drops the `continue-on-error` because a person asked out loud and should see a failure — it
-  is still safe, because a comment-triggered run is nobody's required status.
+- **`review` can never block a merge.** No check run, own comment marker, and it runs in its
+  own workflow, never as a step of the gate's job. The gate decides mergeability; the model
+  does not.
+- **Nothing reviews on every push.** The model is asked only by a `/review` comment or the
+  weekly sweep. `check.yml` used to carry a Review step and deliberately does not any more — a
+  reading nobody asked for, repeated on every commit of every PR in the org, paid for far more
+  of them than anyone read. Do not put it back as a step of the gate's job.
 - **`/review` must clear all four gates in the caller's `if:`** (org owner, comment is on a PR,
   body starts with `/review`, `author_association` is OWNER/MEMBER/COLLABORATOR). `issue_comment`
   is the same risk class as `pull_request_target` — base-repo context, writable token, text a
   stranger can write. Without the association check, anyone can spend the model budget.
-- **The review sweep is always bounded.** `--max` (default 10) caps one run, and `--dry-run`
+- **The review sweep is always bounded.** `--max` (default 30) caps one run, and `--dry-run`
   lists candidates without asking the model — deliberately unlike `review --pr --dry-run`,
   which does ask. A first sweep meets every never-reviewed PR at once.
 - **No endpoints, keys or model names in `config/`.** They arrive as `GUARDENER_MODEL_URL`,

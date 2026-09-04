@@ -103,13 +103,17 @@ enum Command {
         #[arg(long)]
         pr: Option<u64>,
         /// How long a pull request must have sat untouched before a sweep will
-        /// look at it. Ignored when --pr names one.
-        #[arg(long, default_value_t = 3)]
+        /// look at it. Zero means age is no bar, which is the right default now
+        /// that the sweep is the only thing reviewing on its own: a pull request
+        /// opened this morning still deserves reading. Ignored when --pr names
+        /// one.
+        #[arg(long, default_value_t = 0)]
         stale_days: u64,
-        /// The most pull requests one sweep will review. A first sweep meets
-        /// every pull request that was never reviewed at once, and a bill
-        /// nobody asked for is a poor way to find that out.
-        #[arg(long, default_value_t = 10)]
+        /// The most pull requests one sweep will review. High enough that a
+        /// normal week fits inside it, finite because the first sweep meets
+        /// every pull request that was never reviewed at once, and a bill nobody
+        /// asked for is a poor way to find that out.
+        #[arg(long, default_value_t = 30)]
         max: usize,
         /// Print what would be written to GitHub, and write nothing. Reviewing
         /// one pull request still asks the model: what it says is the thing

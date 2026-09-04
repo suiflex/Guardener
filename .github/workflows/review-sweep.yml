@@ -8,25 +8,28 @@
 # its pull requests did, a pull request older than the day the gate was turned
 # on. None of those announce themselves.
 #
-# Daily, and never during a working hour anyone is waiting on: a pull request
-# that has already sat for days is not urgent.
+# Weekly, on a Monday morning, and never during a working hour anyone is waiting
+# on: a pull request that has already sat for days is not urgent, and a sweep
+# that ran every night would mostly report that it found nothing again.
 name: Review sweep
 
 on:
   schedule:
-    - cron: '41 5 * * *'
+    # Monday 05:41 UTC. Early enough that the result is waiting when the week
+    # starts, late enough that it is not competing with the nightly hygiene run.
+    - cron: '41 5 * * 1'
   workflow_dispatch:
     inputs:
       stale_days:
-        description: 'How long a pull request must have sat untouched'
+        description: 'How long a pull request must have sat untouched (0 = any age)'
         type: string
         required: false
-        default: '3'
+        default: '0'
       max:
         description: 'The most pull requests to review in one run'
         type: string
         required: false
-        default: '10'
+        default: '30'
       dry_run:
         description: 'List the candidates and ask the model nothing'
         type: boolean
@@ -71,8 +74,8 @@ jobs:
           GUARDENER_MODEL_URL: ${{ secrets.GUARDENER_MODEL_URL }}
           GUARDENER_MODEL_KEY: ${{ secrets.GUARDENER_MODEL_KEY }}
           GUARDENER_MODEL: ${{ secrets.GUARDENER_MODEL }}
-          STALE_DAYS: ${{ inputs.stale_days || '3' }}
-          MAX: ${{ inputs.max || '10' }}
+          STALE_DAYS: ${{ inputs.stale_days || '0' }}
+          MAX: ${{ inputs.max || '30' }}
         run: |
           if [ -z "$GUARDENER_MODEL_URL" ]; then
             echo "No model endpoint configured; nothing to sweep for."

@@ -172,9 +172,13 @@ answer when nothing meets that bar — which is the expected answer for most pul
 requests.
 
 It is deliberately unequal to the gate. It posts under its own marker, it never
-creates a check run, and the step that runs it carries `continue-on-error`, so
-a model that is slow, wrong or unreachable can never be the reason a pull
-request cannot merge.
+creates a check run, and it runs in a workflow of its own, so a model that is
+slow, wrong or unreachable can never be the reason a pull request cannot merge.
+
+It is also never asked on its own initiative. Two things can start it: a
+`/review` comment, and the weekly sweep below. It deliberately does not run on
+every push — a reading nobody asked for, repeated on every commit of every pull
+request in the organization, paid for far more of them than anyone read.
 
 It reads the diff from the API rather than a checkout, so unlike the gate it
 needs no clone.
@@ -210,24 +214,26 @@ repository missing it.
 ### The sweep
 
 `guardener review` with no `--pr` walks every watched repository for open pull
-requests that have sat untouched for `--stale-days` (default 3) and carry no
-review comment at all. Everything opened while a repository is wired up
-correctly was reviewed the moment it opened and is passed over; what is left is
-the gap — a review that failed quietly under `continue-on-error`, a repository
-whose model secrets arrived after its pull requests did, a pull request older
-than the day the gate was turned on.
+requests that carry no review comment at all, and reviews them. Since nothing
+reviews on every push any more, this is what catches a pull request whose author
+never thought to type `/review` — and the "no comment at all" condition is what
+stops it re-reading the ones already answered.
 
-`--max` (default 10) bounds a run, because the first one meets every
-never-reviewed pull request at once. A dry run lists the candidates and asks the
-model nothing, unlike a dry run of a single review, where the model's answer is
-the thing worth previewing:
+`--stale-days` defaults to 0, so age is no bar: a pull request opened this
+morning is as eligible as one from last month. Raise it to leave recent work
+alone. `--max` (default 30) bounds a run, because the first one meets every
+never-reviewed pull request at once. `--repo` narrows the walk to one
+repository, the way `hygiene --repo` does.
+
+A dry run lists the candidates and asks the model nothing, unlike a dry run of a
+single review, where the model's answer is the thing worth previewing:
 
 ```sh
-GUARDENER_TOKEN=$(gh auth token) cargo run -- review --stale-days 3 --dry-run
+GUARDENER_TOKEN=$(gh auth token) cargo run -- review --dry-run
 ```
 
-`.github/workflows/review-sweep.yml` runs it daily, and takes `stale_days`,
-`max` and `dry_run` from `workflow_dispatch`.
+`.github/workflows/review-sweep.yml` runs it weekly, on a Monday morning, and
+takes `stale_days`, `max` and `dry_run` from `workflow_dispatch`.
 
 ## Not built yet
 
