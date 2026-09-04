@@ -14,8 +14,17 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
+      # The commit matters more than usual here. This action keeps one branch
+      # per toolchain and each branch hardcodes its own version, so a commit
+      # taken from the `1.78.0` branch installs 1.78.0 no matter what the
+      # comment beside it says — which is how this workflow first failed, on a
+      # cargo too old for a dependency's edition. This commit is the head of
+      # `stable`, whose `toolchain` input exists and defaults to stable; it is
+      # passed explicitly below so the version is readable here rather than
+      # inferred from a hash.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
+          toolchain: stable
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
       - run: cargo fmt --all -- --check
