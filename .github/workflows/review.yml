@@ -1,0 +1,99 @@
+# The model's second opinion, asked for by name rather than triggered by a push.
+# Repositories call this; they do not copy it.
+#
+# Separate from check.yml on purpose, and it must stay that way. The gate needs
+# a checkout of the branch, a merge base and a build of ForgeGuard's analysis;
+# the review needs none of that, because it reads the diff from the API. Routing
+# this through check.yml would run the whole gate a second time to produce a
+# comment the gate does not produce.
+#
+# issue_comment carries the same risk class as pull_request_target: it runs in
+# the base repository's context with a writable token, on text a stranger can
+# write. Nothing here executes anything from the pull request — the diff is read
+# as data and sent to a model — and the caller's `if:` decides who is allowed to
+# ask. Do not add a step that runs the branch's scripts.
+name: Guardener Review
+
+on:
+  workflow_call:
+    secrets:
+      app_id:
+        required: true
+      private_key:
+        required: true
+      # Opt-in per repository, exactly as in check.yml: without an endpoint the
+      # step below says so and stops.
+      model_url:
+        required: false
+      model_key:
+        required: false
+      model:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.private_key }}
+          owner: suiflex
+          # One permission, because one comment is all this writes. No
+          # permission-checks: the review never creates a check run, which is
+          # what keeps it from being able to block a merge.
+          permission-pull-requests: write
+
+      # Only the tool. The repository under review is never checked out — the
+      # diff arrives from the API, which is the whole reason this workflow can
+      # be so much smaller than the gate's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: suiflex/Guardener
+          path: tool
+          persist-credentials: false
+
+      # The commit matters more than usual here. This action keeps one branch
+      # per toolchain and each branch hardcodes its own version, so a commit
+      # taken from the `1.78.0` branch installs 1.78.0 no matter what the
+      # comment beside it says. This commit is the head of `stable`, whose
+      # `toolchain` input exists and defaults to stable; it is passed explicitly
+      # below so the version is readable here rather than inferred from a hash.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: tool
+
+      - name: Build Guardener
+        working-directory: tool
+        run: cargo build --release --locked
+
+      # No continue-on-error, unlike the same step in check.yml. There it must
+      # never be the reason a merge is blocked, so a failure is swallowed; here
+      # a person asked a question out loud on a pull request and deserves to see
+      # that the answer failed rather than watch nothing happen. It still cannot
+      # block anything: this runs on a comment, creates no check run, and is
+      # nobody's required status.
+      - name: Review
+        env:
+          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
+          GUARDENER_MODEL_URL: ${{ secrets.model_url }}
+          GUARDENER_MODEL_KEY: ${{ secrets.model_key }}
+          GUARDENER_MODEL: ${{ secrets.model }}
+        run: |
+          if [ -z "$GUARDENER_MODEL_URL" ]; then
+            echo "No model endpoint configured for this repository; nothing to ask."
+            exit 0
+          fi
+          tool/target/release/guardener review \
+            --registry tool/config/repositories.toml \
+            --settings tool/config/review.toml \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.issue.number }}"

@@ -194,6 +194,41 @@ for.
 A repository that passes no `model_url` to the workflow still gets the gate;
 it just gets no second opinion.
 
+### Asking for one
+
+Comment `/review` on a pull request and the model reads it again. That runs
+`.github/workflows/review.yml` — the review on its own, not the gate a second
+time: the review reads the diff from the API, so it needs neither the checkout
+nor the merge base the gate cannot do without.
+
+Only the owner, an organization member, or an invited collaborator can ask.
+`issue_comment` runs in the base repository's context with a writable token, so
+without that check anyone able to type in a comment box could spend the model
+budget. `guardener hygiene --fix` opens the pull request that adds the stub to a
+repository missing it.
+
+### The sweep
+
+`guardener review` with no `--pr` walks every watched repository for open pull
+requests that have sat untouched for `--stale-days` (default 3) and carry no
+review comment at all. Everything opened while a repository is wired up
+correctly was reviewed the moment it opened and is passed over; what is left is
+the gap — a review that failed quietly under `continue-on-error`, a repository
+whose model secrets arrived after its pull requests did, a pull request older
+than the day the gate was turned on.
+
+`--max` (default 10) bounds a run, because the first one meets every
+never-reviewed pull request at once. A dry run lists the candidates and asks the
+model nothing, unlike a dry run of a single review, where the model's answer is
+the thing worth previewing:
+
+```sh
+GUARDENER_TOKEN=$(gh auth token) cargo run -- review --stale-days 3 --dry-run
+```
+
+`.github/workflows/review-sweep.yml` runs it daily, and takes `stale_days`,
+`max` and `dry_run` from `workflow_dispatch`.
+
 ## Not built yet
 
 Inline review comments. The model already reports a file and a line, but they

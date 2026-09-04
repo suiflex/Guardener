@@ -1,0 +1,30 @@
+# Guardener answers `/review` on its own pull requests too.
+#
+# The reference is local rather than `suiflex/Guardener/...@main`, so a change to
+# the review workflow is tested by the pull request that makes it instead of
+# only after it has already landed on main. Same reasoning as guardener.yml.
+#
+# Otherwise identical to templates/workflows/review.yml, which is the copy every
+# other repository gets. Keep the two in step — the `if:` in particular, whose
+# four conditions are explained there.
+name: Guardener Review
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    if: >-
+      github.repository_owner == 'suiflex' &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/review') &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'),
+               github.event.comment.author_association)
+    uses: ./.github/workflows/review.yml
+    secrets:
+      app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
+      private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
+      model_url: ${{ secrets.GUARDENER_MODEL_URL }}
+      model_key: ${{ secrets.GUARDENER_MODEL_KEY }}
+      model: ${{ secrets.GUARDENER_MODEL }}

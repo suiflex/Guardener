@@ -1,0 +1,83 @@
+# Finds open pull requests that sat still and never got a review, and reviews
+# them. The safety net under the per-pull-request trigger, not a replacement for
+# it: everything opened while a repository is wired up correctly is reviewed the
+# moment it opens, and this sweep will pass over all of it untouched.
+#
+# What it is actually for is the gap. A review that failed quietly under
+# check.yml's continue-on-error, a repository whose model secrets arrived after
+# its pull requests did, a pull request older than the day the gate was turned
+# on. None of those announce themselves.
+#
+# Daily, and never during a working hour anyone is waiting on: a pull request
+# that has already sat for days is not urgent.
+name: Review sweep
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: 'How long a pull request must have sat untouched'
+        type: string
+        required: false
+        default: '3'
+      max:
+        description: 'The most pull requests to review in one run'
+        type: string
+        required: false
+        default: '10'
+      dry_run:
+        description: 'List the candidates and ask the model nothing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    if: github.repository_owner == 'suiflex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GUARDENER_BOT_APP_ID }}
+          private-key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
+          owner: suiflex
+          # Reads open pull requests across the organization and writes only
+          # review comments. No checks permission: the sweep, like every other
+          # path into the review, creates no check run.
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The commit matters more than usual here. This action keeps one branch
+      # per toolchain and each branch hardcodes its own version, so a commit
+      # taken from the `1.78.0` branch installs 1.78.0 no matter what the
+      # comment beside it says. This commit is the head of `stable`, whose
+      # `toolchain` input exists and defaults to stable; it is passed explicitly
+      # below so the version is readable here rather than inferred from a hash.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - run: cargo build --release --locked
+
+      - name: Sweep
+        env:
+          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
+          GUARDENER_MODEL_URL: ${{ secrets.GUARDENER_MODEL_URL }}
+          GUARDENER_MODEL_KEY: ${{ secrets.GUARDENER_MODEL_KEY }}
+          GUARDENER_MODEL: ${{ secrets.GUARDENER_MODEL }}
+          STALE_DAYS: ${{ inputs.stale_days || '3' }}
+          MAX: ${{ inputs.max || '10' }}
+        run: |
+          if [ -z "$GUARDENER_MODEL_URL" ]; then
+            echo "No model endpoint configured; nothing to sweep for."
+            exit 0
+          fi
+          set -- --stale-days "$STALE_DAYS" --max "$MAX"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then set -- "$@" --dry-run; fi
+          ./target/release/guardener review "$@"

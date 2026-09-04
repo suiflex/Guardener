@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::config::Registry;
+use crate::config::{Registry, RepositoryEntry};
 use crate::github::{split_repo, Client};
 
 pub const MARKER: &str = "<!-- guardener:review -->";
@@ -61,8 +61,15 @@ struct Note {
 pub struct Request<'a> {
     pub registry: &'a Path,
     pub settings: &'a Path,
-    pub repo: &'a str,
-    pub pull_request: u64,
+    /// The repository to review in, or `None` to sweep the whole registry.
+    pub repo: Option<&'a str>,
+    /// The pull request to review, or `None` to sweep.
+    pub pull_request: Option<u64>,
+    /// How long a pull request must have sat untouched before the sweep will
+    /// look at it.
+    pub stale_days: u64,
+    /// The most pull requests one sweep will review. See `sweep`.
+    pub max: usize,
     /// Endpoint, key and model, all from the environment: together they name a
     /// private service, and none of them belong in a public repository.
     pub endpoint: &'a str,
@@ -71,35 +78,162 @@ pub struct Request<'a> {
 }
 
 pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
-    let (owner, name) = split_repo(request.repo)?;
+    let settings = load_settings(request.settings)?;
     let registry = Registry::load(request.registry)?;
-    if registry.find(request.repo).is_none() {
-        bail!(
-            "{} is not in the registry; add it before reviewing pull requests there",
-            request.repo
-        );
-    }
-    let settings: Settings = toml::from_str(
-        &std::fs::read_to_string(request.settings)
-            .with_context(|| format!("failed to read {}", request.settings.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", request.settings.display()))?;
 
-    let pull_request = client.pull_request(owner, name, request.pull_request)?;
+    match (request.repo, request.pull_request) {
+        (Some(repo), Some(number)) => {
+            if registry.find(repo).is_none() {
+                bail!("{repo} is not in the registry; add it before reviewing pull requests there");
+            }
+            let (owner, name) = split_repo(repo)?;
+            review_one(client, request, &settings, owner, name, number)
+        }
+        // `--repo` without `--pr` narrows the sweep to one repository, the same
+        // way `hygiene --repo` does. Sweeping the whole organization while
+        // quietly ignoring a repository the caller named would be worse than
+        // either behaviour on its own.
+        (repo, None) => sweep(client, request, &settings, &registry, repo),
+        (None, Some(_)) => bail!("--pr names a pull request but --repo does not say where"),
+    }
+}
+
+/// Reviews every open pull request that has sat untouched for `stale_days` and
+/// carries no review comment, across every repository in the registry.
+///
+/// The second condition is the one that matters. Every pull request opened
+/// since a repository joined already got a review the moment it opened, so
+/// without it a sweep would pay to review the whole organization again nightly.
+/// With it, what is left is the genuine gap: a review that failed quietly under
+/// `continue-on-error`, a repository whose model secrets arrived later, a pull
+/// request older than the gate itself.
+fn sweep(
+    client: &Client,
+    request: &Request<'_>,
+    settings: &Settings,
+    registry: &Registry,
+    only: Option<&str>,
+) -> Result<()> {
+    if let Some(repo) = only {
+        if registry.find(repo).is_none() {
+            bail!("{repo} is not in the registry; add it before reviewing pull requests there");
+        }
+    }
+    let cutoff = now_epoch().saturating_sub((request.stale_days * 86_400) as i64);
+    let mut budget = request.max;
+
+    for entry in &registry.repositories {
+        if only.is_some_and(|repo| !entry.name.eq_ignore_ascii_case(repo)) {
+            continue;
+        }
+        if budget == 0 {
+            println!("stopping at --max {}", request.max);
+            break;
+        }
+        budget -= sweep_repository(client, request, settings, entry, cutoff, budget)?;
+    }
+
+    let reviewed = request.max - budget;
+    if client.is_dry_run() {
+        println!("{reviewed} pull request(s) would be reviewed");
+    } else {
+        println!("{reviewed} pull request(s) reviewed");
+    }
+    Ok(())
+}
+
+/// One repository's share of the sweep. Returns how much of `budget` it spent.
+///
+/// Split from `sweep` rather than nested inside it because the two answer
+/// different questions: which repositories are worth walking and how much of the
+/// run's budget is left, against which of one repository's pull requests are
+/// stale. The walk is linear either way — every open pull request is visited
+/// once — but reading it as one function meant holding both questions at once.
+fn sweep_repository(
+    client: &Client,
+    request: &Request<'_>,
+    settings: &Settings,
+    entry: &RepositoryEntry,
+    cutoff: i64,
+    budget: usize,
+) -> Result<usize> {
+    let (owner, name) = split_repo(&entry.name)?;
+
+    // A sweep is worth more than any single repository in it. One that cannot
+    // be read is reported and the walk continues, the same bargain the hygiene
+    // sweep strikes.
+    let open = match client.open_pull_requests(owner, name) {
+        Ok(open) => open,
+        Err(error) => {
+            println!("{}: skipped ({error:#})", entry.name);
+            return Ok(0);
+        }
+    };
+
+    let mut spent = 0usize;
+    for pull_request in open {
+        if spent == budget {
+            break;
+        }
+        let Some(number) = pull_request["number"].as_u64() else {
+            continue;
+        };
+        let fresh = pull_request["updated_at"]
+            .as_str()
+            .and_then(epoch)
+            .is_none_or(|updated| updated > cutoff);
+        if fresh {
+            continue;
+        }
+        if client.has_comment(owner, name, number, MARKER)? {
+            continue;
+        }
+
+        // A dry run of a sweep lists and stops. This is a deliberate break from
+        // `--pr --dry-run`, where the model is still asked because its answer is
+        // the whole point of the preview: here the preview is *which* pull
+        // requests would be read, and asking would be the full cost of the run
+        // for a rehearsal of it.
+        println!("{}#{number}: stale and never reviewed", entry.name);
+        if !client.is_dry_run() {
+            review_one(client, request, settings, owner, name, number)?;
+        }
+        spent += 1;
+    }
+    Ok(spent)
+}
+
+fn load_settings(path: &Path) -> Result<Settings> {
+    toml::from_str(
+        &std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn review_one(
+    client: &Client,
+    request: &Request<'_>,
+    settings: &Settings,
+    owner: &str,
+    name: &str,
+    number: u64,
+) -> Result<()> {
+    let pull_request = client.pull_request(owner, name, number)?;
 
     // A bot's pull request was not written by anyone who can act on a review.
     if pull_request["user"]["type"].as_str() == Some("Bot") {
         println!("skipped: opened by a bot");
-        return client.upsert_comment(owner, name, request.pull_request, MARKER, None);
+        return client.upsert_comment(owner, name, number, MARKER, None);
     }
 
-    let diff = client.pull_request_diff(owner, name, request.pull_request)?;
+    let diff = client.pull_request_diff(owner, name, number)?;
     let reviewable = filter(&diff, &settings.skip);
     let changed = changed_lines(&reviewable);
 
     if changed == 0 {
         println!("skipped: nothing left after filtering");
-        return client.upsert_comment(owner, name, request.pull_request, MARKER, None);
+        return client.upsert_comment(owner, name, number, MARKER, None);
     }
     if changed > settings.max_changed_lines {
         println!(
@@ -109,7 +243,7 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
         return client.upsert_comment(
             owner,
             name,
-            request.pull_request,
+            number,
             MARKER,
             Some(format!(
                 "Not reviewed: {changed} changed lines is past the {} this is configured to read. \
@@ -130,7 +264,52 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
     let notes = parse(&answer)?;
     println!("{} note(s) over {changed} changed lines", notes.len());
 
-    client.upsert_comment(owner, name, request.pull_request, MARKER, render(&notes))
+    client.upsert_comment(owner, name, number, MARKER, render(&notes))
+}
+
+fn now_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Seconds since the epoch for one of GitHub's timestamps, or `None` if it is
+/// not shaped like one.
+///
+/// ponytail: hand-rolled rather than pulled from a date crate. The whole need is
+/// "is this timestamp older than N days", against a field GitHub documents as
+/// RFC 3339 in UTC and always renders at fixed width — a dependency for one
+/// subtraction is a dependency to keep patched forever. The ceiling is real
+/// though: this understands exactly `YYYY-MM-DDTHH:MM:SSZ` and nothing else, no
+/// offsets and no fractional seconds. Reach for `time` or `chrono` the moment a
+/// second caller needs anything more than this.
+fn epoch(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let number = |range: std::ops::Range<usize>| timestamp.get(range)?.parse::<i64>().ok();
+    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
+    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Days between 1970-01-01 and a civil date, by Howard Hinnant's algorithm.
+///
+/// Shifts the year to start in March so that the leap day lands at the end of
+/// the cycle and needs no special case — which is the entire reason to use this
+/// rather than count months by hand.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
 }
 
 /// Drops whole files from the diff rather than individual hunks: a file worth
@@ -339,5 +518,51 @@ diff --git a/Cargo.lock b/Cargo.lock
 
         assert!(body.contains("`a.rs`"));
         assert!(body.contains("Nothing here blocks a merge"));
+    }
+
+    #[test]
+    fn epoch_reads_githubs_timestamps() {
+        assert_eq!(epoch("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch("2024-01-01T00:00:00Z"), Some(1_704_067_200));
+        assert_eq!(epoch("2026-09-05T12:34:56Z"), Some(1_788_611_696));
+    }
+
+    /// The leap day is the whole reason `days_from_civil` shifts the year to
+    /// start in March. A hand-rolled month table gets this wrong.
+    #[test]
+    fn epoch_counts_the_leap_day() {
+        let feb29 = epoch("2024-02-29T00:00:00Z").expect("a leap day");
+        let mar01 = epoch("2024-03-01T00:00:00Z").expect("the day after");
+        assert_eq!(mar01 - feb29, 86_400);
+
+        // 2100 is divisible by 4 but not a leap year: the century rule.
+        let feb28 = epoch("2100-02-28T00:00:00Z").expect("february");
+        let mar01 = epoch("2100-03-01T00:00:00Z").expect("march");
+        assert_eq!(mar01 - feb28, 86_400);
+    }
+
+    #[test]
+    fn epoch_refuses_what_it_cannot_read() {
+        assert_eq!(epoch(""), None);
+        assert_eq!(epoch("2024-01-01"), None);
+        assert_eq!(epoch("2024-01-01 00:00:00Z"), None);
+        assert_eq!(epoch("2024-13-01T00:00:00Z"), None);
+        assert_eq!(epoch("not a timestamp at all"), None);
+    }
+
+    /// The sweep's filter, stated as the comparison it actually makes. A pull
+    /// request is a candidate only when it is *both* old enough and unreviewed;
+    /// dropping the second half would re-review the whole organization nightly.
+    #[test]
+    fn stale_means_old_and_never_reviewed() {
+        let cutoff = epoch("2026-09-01T00:00:00Z").expect("a cutoff");
+        let candidate = |updated: &str, reviewed: bool| {
+            epoch(updated).is_some_and(|at| at <= cutoff) && !reviewed
+        };
+
+        assert!(candidate("2026-08-01T00:00:00Z", false), "old, unreviewed");
+        assert!(!candidate("2026-08-01T00:00:00Z", true), "old but reviewed");
+        assert!(!candidate("2026-09-30T00:00:00Z", false), "fresh");
+        assert!(!candidate("2026-09-30T00:00:00Z", true), "fresh, reviewed");
     }
 }

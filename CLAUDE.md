@@ -15,12 +15,12 @@ For code changes, use `/forgeguard-engineering`.
 | `src/main.rs` | clap CLI, three subcommands, env-var reading (`GUARDENER_TOKEN`, `GUARDENER_MODEL*`) |
 | `src/check.rs` | `check` — ForgeGuard gate over a PR's changed lines → check run + one edited comment |
 | `src/hygiene.rs` | `hygiene` — org drift sweep → one standing issue; `--fix` opens add-only PRs |
-| `src/review.rs` | `review` — model reads the diff, posts a second-opinion comment |
+| `src/review.rs` | `review` — model reads the diff, posts a second-opinion comment; sweeps stale PRs when `--pr` is omitted |
 | `src/github.rs` | the only place that talks to the GitHub API (`ureq`); `Client::new(token, dry_run)` |
 | `src/config.rs` | `config/repositories.toml` registry + per-repo policy resolution |
 | `config/*.toml` | org policy: watched repos, default ForgeGuard config, label set, review limits |
 | `templates/` | files `hygiene --fix` adds to a repository |
-| `.github/workflows/` | `check.yml` is called by other repos; the rest run this repo |
+| `.github/workflows/` | `check.yml` and `review.yml` are called by other repos; the rest run this repo |
 
 Analysis itself lives upstream in `forgeguard-core` (git dependency, pinned by tag in
 `Cargo.toml`). This repo is the org-wide driver around it.
@@ -51,11 +51,22 @@ Tests are `#[cfg(test)]` modules at the bottom of each `src/*.rs`. No integratio
   ForgeGuard's configured quality commands for out-of-org branches).
 - **`hygiene --fix` only ever adds.** It never edits or replaces an existing file, and never
   changes a setting. Labels and branch protection are reported for a person to act on. A bot
-  that quietly revises decisions org-wide is worse than the drift it catches.
+  that quietly revises decisions org-wide is worse than the drift it catches. This also
+  dictates design: a new capability ships as a *new* stub file, because one bolted onto an
+  already-installed `guardener.yml` could never be rolled out without hand-written PRs.
 - **The daily hygiene schedule never passes `--fix`.** That stays a `workflow_dispatch` a
   person triggers.
 - **`review` can never block a merge.** No check run, own comment marker, and the workflow step
-  carries `continue-on-error`. The gate decides mergeability; the model does not.
+  carries `continue-on-error`. The gate decides mergeability; the model does not. `review.yml`
+  drops the `continue-on-error` because a person asked out loud and should see a failure — it
+  is still safe, because a comment-triggered run is nobody's required status.
+- **`/review` must clear all four gates in the caller's `if:`** (org owner, comment is on a PR,
+  body starts with `/review`, `author_association` is OWNER/MEMBER/COLLABORATOR). `issue_comment`
+  is the same risk class as `pull_request_target` — base-repo context, writable token, text a
+  stranger can write. Without the association check, anyone can spend the model budget.
+- **The review sweep is always bounded.** `--max` (default 10) caps one run, and `--dry-run`
+  lists candidates without asking the model — deliberately unlike `review --pr --dry-run`,
+  which does ask. A first sweep meets every never-reviewed PR at once.
 - **No endpoints, keys or model names in `config/`.** They arrive as `GUARDENER_MODEL_URL`,
   `GUARDENER_MODEL_KEY`, `GUARDENER_MODEL` secrets, so changing the reviewing model is a secret
   change, not a PR against a public repo.

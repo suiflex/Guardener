@@ -84,6 +84,10 @@ enum Command {
     },
 
     /// Have a model read a pull request and say what the scanner cannot.
+    ///
+    /// Names a pull request with --repo and --pr. Without --pr it sweeps
+    /// instead, for open pull requests that sat still and were never reviewed:
+    /// every watched repository, or just the one --repo names.
     Review {
         /// The watched-repository registry.
         #[arg(long, default_value = "config/repositories.toml")]
@@ -91,14 +95,26 @@ enum Command {
         /// How much of a change is worth reading, and what to leave out.
         #[arg(long, default_value = "config/review.toml")]
         settings: PathBuf,
-        /// The repository as owner/name.
+        /// The repository as owner/name. With --pr, the one to review; without
+        /// it, the only one to sweep. Omit both to sweep the whole registry.
         #[arg(long)]
-        repo: String,
-        /// The pull request number.
+        repo: Option<String>,
+        /// The pull request number. Omit to sweep the registry instead.
         #[arg(long)]
-        pr: u64,
-        /// Print what would be written to GitHub, and write nothing. The model
-        /// is still asked: what it says is the thing worth previewing.
+        pr: Option<u64>,
+        /// How long a pull request must have sat untouched before a sweep will
+        /// look at it. Ignored when --pr names one.
+        #[arg(long, default_value_t = 3)]
+        stale_days: u64,
+        /// The most pull requests one sweep will review. A first sweep meets
+        /// every pull request that was never reviewed at once, and a bill
+        /// nobody asked for is a poor way to find that out.
+        #[arg(long, default_value_t = 10)]
+        max: usize,
+        /// Print what would be written to GitHub, and write nothing. Reviewing
+        /// one pull request still asks the model: what it says is the thing
+        /// worth previewing. A sweep does not — there the preview is which
+        /// pull requests would be read, and asking would cost the whole run.
         #[arg(long)]
         dry_run: bool,
     },
@@ -138,6 +154,8 @@ fn main() -> Result<()> {
             settings,
             repo,
             pr,
+            stale_days,
+            max,
             dry_run,
         } => {
             let client = Client::new(token()?, dry_run);
@@ -146,8 +164,10 @@ fn main() -> Result<()> {
                 &review::Request {
                     registry: &registry,
                     settings: &settings,
-                    repo: &repo,
+                    repo: repo.as_deref(),
                     pull_request: pr,
+                    stale_days,
+                    max,
                     endpoint: &required("GUARDENER_MODEL_URL")?,
                     key: &required("GUARDENER_MODEL_KEY")?,
                     model: &required("GUARDENER_MODEL")?,

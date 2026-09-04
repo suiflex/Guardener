@@ -68,6 +68,12 @@ impl Client {
         Self { token, dry_run }
     }
 
+    /// Asked by the review sweep, which withholds more than the writes: see the
+    /// note beside its dry-run branch.
+    pub fn is_dry_run(&self) -> bool {
+        self.dry_run
+    }
+
     /// The headers every call carries. Split out because ureq types a request
     /// by whether it may have a body, so the verbs cannot share a builder.
     fn decorate<B>(&self, builder: ureq::RequestBuilder<B>) -> ureq::RequestBuilder<B> {
@@ -168,6 +174,50 @@ impl Client {
             }
             if count < 100 {
                 return Ok(None);
+            }
+        }
+        unreachable!()
+    }
+
+    /// Whether a marker comment is already on a pull request.
+    ///
+    /// A thin question over `find_comment` rather than a second walk of the
+    /// comment list: the sweep asks this of every open pull request it
+    /// considers, and a second implementation would be a second place for the
+    /// pagination above to be got wrong.
+    pub fn has_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        pull_request: u64,
+        marker: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .find_comment(owner, repo, pull_request, marker)?
+            .is_some())
+    }
+
+    /// Every open pull request on a repository.
+    ///
+    /// Paginated to the end for the same reason the comment walk is: a
+    /// repository busy enough to fill a page is exactly the one whose oldest
+    /// pull request — the one the sweep exists to find — sits past it.
+    ///
+    /// Returns the raw objects rather than a narrow struct. The sweep reads two
+    /// fields today, and every field it might want next is already here.
+    pub fn open_pull_requests(&self, owner: &str, repo: &str) -> Result<Vec<Value>> {
+        let mut all = Vec::new();
+        for page in 1.. {
+            let url =
+                format!("{API}/repos/{owner}/{repo}/pulls?state=open&per_page=100&page={page}");
+            let batch = self.get(&url)?;
+            let batch = batch
+                .as_array()
+                .ok_or_else(|| anyhow!("unexpected shape for the pull request list"))?;
+            let count = batch.len();
+            all.extend(batch.iter().cloned());
+            if count < 100 {
+                return Ok(all);
             }
         }
         unreachable!()

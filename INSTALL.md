@@ -155,6 +155,21 @@ jobs:
 
 Drop the last three lines to run the gate without the review.
 
+**Asking for a review by hand** takes a second file,
+`.github/workflows/review.yml`, which `guardener hygiene --fix` adds alongside
+the first. It answers `/review` on a pull request by running the review on its
+own — not the gate a second time — and only for the owner, an organization
+member, or an invited collaborator. That last part is not decoration:
+`issue_comment` runs in the base repository's context with a writable token, so
+without it anyone able to type in a comment box could spend the model budget.
+The full file, with the reasoning beside each condition, is
+`templates/workflows/review.yml`.
+
+A second file rather than another trigger on the one above, because `--fix` may
+only add and never edit: a capability bolted onto `guardener.yml` could not
+reach the repositories that already have one without a hand-written pull request
+to each.
+
 ### Why this file has to exist in every repository
 
 There is no way to make a workflow run on another repository's pull requests
@@ -184,9 +199,24 @@ currently report `gate-workflow` missing, and:
 gh workflow run hygiene.yml --repo <org>/Guardener -f fix=true
 ```
 
-opens one pull request per repository adding exactly that file, from the
-template in `templates/workflows/guardener.yml`. Review and merge them and the
-gate is on everywhere. Run it without `-f fix=true` first and read the issue it
+opens one pull request per repository adding exactly the files it is missing,
+from the templates in `templates/workflows/`. Review and merge them and the
+gate — and `/review` with it — is on everywhere.
+
+One thing to check before trusting a run of it. `--fix` refuses to touch a
+repository where its branch already exists, and says `guardener/hygiene already
+exists; left as it is` rather than force anything. That is the right refusal,
+but it also means a branch left behind by an earlier sweep — one whose pull
+request was closed, or never opened — silently blocks every later addition to
+that repository. A dry run says so plainly, per repository, which is the reason
+to read one first:
+
+```sh
+gh api repos/<org>/<repo>/git/ref/heads/guardener/hygiene --jq .object.sha
+gh api -X DELETE repos/<org>/<repo>/git/refs/heads/guardener/hygiene
+```
+
+Delete the abandoned ones, then run the sweep. Run it without `-f fix=true` first and read the issue it
 writes — `--fix` opens a pull request against every repository that is missing
 something, and that is a lot of notifications to send by accident.
 

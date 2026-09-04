@@ -41,9 +41,3 @@ name = "suiflex/SafeHell"
 
 [[repository]]
 name = "suiflex/companion"
-
-# The organization profile and shared workflows. No source of its own to
-# analyse, and it is where the triage workflow it would call actually lives.
-[[repository]]
-name = "suiflex/.github"
-exempt = ["gate-workflow"]

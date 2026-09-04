@@ -66,6 +66,15 @@ const EXPECTED: &[Expected] = &[
         accepted: &[".github/workflows/guardener.yml"],
         contents: include_str!("../templates/workflows/guardener.yml"),
     },
+    // A separate file rather than another trigger on the gate's workflow, and
+    // that is forced rather than chosen: `--fix` may only add, never edit, so a
+    // capability bolted onto guardener.yml could not reach the repositories
+    // that already have one without a hand-written pull request to each.
+    Expected {
+        check: "review-workflow",
+        accepted: &[".github/workflows/review.yml"],
+        contents: include_str!("../templates/workflows/review.yml"),
+    },
 ];
 
 #[derive(Debug, PartialEq, Eq)]
