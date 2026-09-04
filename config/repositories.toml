@@ -1,0 +1,49 @@
+# The repositories Guardener watches.
+#
+# Public repositories only. A private repository is read by whoever already has
+# access to it, and the standard this enforces — a licence anyone can read, an
+# owners file, a gate whose findings appear on a public pull request — is about
+# what the organization shows the outside world.
+#
+# homebrew-tap and scoop-bucket are public and deliberately absent: their
+# contents are written by ForgeGuard's release workflow, so there is nothing
+# there a person authored and nothing a gate could usefully say.
+#
+# One line per repository is the normal case: the organization default in
+# config/forgeguard.toml governs, and the entry exists only to say "yes, guard
+# this one". Add `mode` or `rules` when a repository genuinely needs a different
+# gate, and `exempt` when a hygiene check does not apply — so that the exception
+# is visible here, next to every repository that does not need one.
+#
+# Being listed here puts a repository in the hygiene sweep. The gate is separate
+# and opt-in per repository: it runs only where .github/workflows/guardener.yml
+# exists. See README.md.
+
+# The guard guards itself. Until the first push it reports as not checked,
+# which is the correct answer for a repository with no commits.
+[[repository]]
+name = "suiflex/Guardener"
+
+[[repository]]
+name = "suiflex/ForgeGuard"
+
+[[repository]]
+name = "suiflex/suitest"
+
+[[repository]]
+name = "suiflex/rdb"
+
+[[repository]]
+name = "suiflex/websift"
+
+[[repository]]
+name = "suiflex/SafeHell"
+
+[[repository]]
+name = "suiflex/companion"
+
+# The organization profile and shared workflows. No source of its own to
+# analyse, and it is where the triage workflow it would call actually lives.
+[[repository]]
+name = "suiflex/.github"
+exempt = ["gate-workflow"]

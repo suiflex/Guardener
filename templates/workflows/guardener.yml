@@ -1,0 +1,16 @@
+# Runs the organization's ForgeGuard gate over this pull request's changed
+# lines. The policy and the workflow both live in suiflex/Guardener; this file
+# only says that the repository takes part.
+name: Guardener
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  forgeguard:
+    if: github.repository_owner == 'suiflex'
+    uses: suiflex/Guardener/.github/workflows/check.yml@main
+    secrets:
+      app_id: ${{ secrets.SUIFLEX_BOT_APP_ID }}
+      private_key: ${{ secrets.SUIFLEX_BOT_PRIVATE_KEY }}

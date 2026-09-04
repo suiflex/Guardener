@@ -1,0 +1,55 @@
+# Walks every watched repository and reports what has drifted from the
+# organization standard, into one issue on this repository that is edited in
+# place and closed once there is nothing left to say.
+#
+# Daily rather than hourly: this catches a repository created without its label
+# set or a workflow lost in a merge, and neither is worth waking anyone for.
+#
+# Report only. `--fix` opens pull requests across the organization, so it stays
+# a thing a person runs deliberately from workflow_dispatch, never the schedule.
+name: Hygiene
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      fix:
+        description: 'Open pull requests adding the standard files that are missing'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    if: github.repository_owner == 'suiflex'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.SUIFLEX_BOT_APP_ID }}
+          private-key: ${{ secrets.SUIFLEX_BOT_PRIVATE_KEY }}
+          owner: suiflex
+          # Reads every repository in the organization, and writes only the
+          # standing issue — plus, when a person asks for it, the branch and
+          # pull request that add a missing file.
+          permission-administration: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+      - run: cargo build --release --locked
+
+      - name: Sweep
+        env:
+          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ "${{ inputs.fix }}" = "true" ]; then set -- --fix; else set --; fi
+          ./target/release/guardener hygiene "$@"

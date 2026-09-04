@@ -1,0 +1,103 @@
+# The ForgeGuard gate, run on a pull request in any repository the organization
+# watches. Repositories call this; they do not copy it.
+#
+# pull_request_target, not pull_request: a pull request from a fork runs with a
+# read-only token, and a read-only token cannot create the check run that is the
+# whole point of this workflow.
+#
+# That choice is only safe because this job never executes anything from the
+# branch it analyses. Guardener is built from this repository, and the analysis
+# itself is a tree-sitter parse — it reads source and runs none of it. The one
+# thing that would execute the branch's own instructions is ForgeGuard's
+# configured quality commands, and `--untrusted` turns those off for every
+# branch that does not come from this repository. Do not add a step that runs
+# the checkout's scripts, and do not drop the untrusted flag.
+name: Guardener
+
+on:
+  workflow_call:
+    secrets:
+      app_id:
+        required: true
+      private_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  forgeguard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.private_key }}
+          owner: suiflex
+          # Narrowed here rather than relying on the app's organization-wide
+          # grant, so a mistake in this workflow cannot reach anything else.
+          permission-checks: write
+          permission-pull-requests: write
+
+      # The branch under analysis, and the tool, in separate directories.
+      # Nesting the tool inside the checkout would put Guardener's own source
+      # under the scanner's root, which is confusing to read even though the
+      # changed-line scope would never report it.
+      #
+      # Full history because the gate measures the pull request against its
+      # merge base, not against its tip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A fork does not carry the base branch, so fetch it explicitly and let
+      # the gate resolve the merge base from FETCH_HEAD. Same path for a branch
+      # in this repository, so there is only one thing to get wrong.
+      - name: Fetch the base branch
+        working-directory: subject
+        run: |
+          git remote add guardener-base "https://github.com/${{ github.repository }}"
+          git fetch --no-tags --depth=200 guardener-base \
+            "${{ github.event.pull_request.base.ref }}"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: suiflex/Guardener
+          path: tool
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@788abdaa468b02b2d53a3d1d8fcac62dc9858f4a # stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: tool
+
+      # Built from source rather than downloaded. Two repositories are watched
+      # today and the build is cached; publish release binaries when the wait
+      # starts costing more than the release plumbing would.
+      - name: Build Guardener
+        working-directory: tool
+        run: cargo build --release --locked
+
+      - name: Run the gate
+        env:
+          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
+          # True for every branch that is not in this repository. Read from the
+          # event rather than from the checkout, which a fork controls.
+          UNTRUSTED: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ "$UNTRUSTED" = "true" ]; then set -- --untrusted; else set --; fi
+          tool/target/release/guardener check \
+            --root subject \
+            --registry tool/config/repositories.toml \
+            --organization-default tool/config/forgeguard.toml \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base FETCH_HEAD \
+            "$@"

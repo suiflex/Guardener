@@ -1,0 +1,38 @@
+# The ForgeGuard policy for repositories that do not ship one of their own.
+#
+# A repository that keeps its own .forgeguard/config.toml overrides this file
+# entirely. That is the intended escape hatch: this is the floor everyone stands
+# on, not a ceiling anyone has to argue with.
+#
+# Deliberately no [[commands]]. Build and test commands differ per language and
+# belong next to the code that needs them; a repository that wants them run in
+# the gate ships its own configuration. Keeping this file scan-only also means
+# the organization default never executes anything from a checkout.
+
+version = 2
+
+# Strict: on version 2 this blocks every finding at warning severity or above,
+# not only errors. The gate measures the lines a pull request changed and
+# nothing else, so what it blocks on is work already in front of the author,
+# never the history behind it.
+#
+# Do not soften this with `[policies] warnings_block = false`. That key
+# overrides the mode rather than adjusting it, and with it set the gate falls
+# back to blocking on errors alone — `default` wearing strict's name. A
+# repository that genuinely needs less says so in the registry with its own
+# `mode`, where the exception is visible next to every repository that manages
+# without one.
+mode = "strict"
+
+[project]
+# Replaced with the repository's own name when this file is used.
+name = "suiflex"
+
+[scan]
+enabled = true
+include_tests = false
+
+# Stated even though strict already blocks it, so that this one rule keeps
+# blocking if the mode above is ever relaxed.
+[rules."FG-SEC-001"]
+block = true

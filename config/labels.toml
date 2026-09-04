@@ -1,0 +1,22 @@
+# The labels the organization's triage workflow applies. It cannot apply a
+# label that does not exist, so a repository missing one silently loses part of
+# its triage.
+#
+# suiflex/.github/scripts/sync-labels.sh creates them. This file audits that it
+# was run. Keep the two in step when a label is added.
+
+names = [
+  "maintainer",
+  "first contribution",
+  "bot",
+  "commit: feat",
+  "commit: fix",
+  "commit: docs",
+  "commit: chore",
+  "commit: refactor",
+  "commit: test",
+  "commit: ci",
+  "commit: build",
+  "commit: perf",
+  "needs: conventional commit",
+]
