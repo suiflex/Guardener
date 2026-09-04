@@ -1,6 +1,8 @@
-# Runs the organization's ForgeGuard gate over this pull request's changed
-# lines. The policy and the workflow both live in suiflex/Guardener; this file
-# only says that the repository takes part.
+# Guardener gates itself.
+#
+# The reference is local rather than `suiflex/Guardener/...@main`, so a change
+# to the gate is tested by the pull request that makes it instead of only after
+# it has already landed on main.
 name: Guardener
 
 on:
@@ -10,7 +12,7 @@ on:
 jobs:
   forgeguard:
     if: github.repository_owner == 'suiflex'
-    uses: suiflex/Guardener/.github/workflows/check.yml@main
+    uses: ./.github/workflows/check.yml
     secrets:
       app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
       private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}

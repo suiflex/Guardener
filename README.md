@@ -1,4 +1,11 @@
-# Guardener
+# Guardener — the suiflex engineering standard, applied to every repository
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+    <img src="assets/brand/logo-light.svg" alt="Guardener" width="360">
+  </picture>
+</p>
 
 Runs the suiflex engineering standard across the organization's repositories.
 
@@ -29,6 +36,40 @@ an organization is worse than the drift it was meant to catch.
 
 The daily sweep never passes `--fix`; opening pull requests across the
 organization is something a person triggers from `workflow_dispatch`.
+
+## The app
+
+Guardener acts as its own GitHub App, `guardener-bot`, rather than borrowing the
+one that labels pull requests. The two need very different things: triage reads
+team membership and writes labels, while this writes check runs, opens pull
+requests and reads branch protection. Sharing one app would mean granting the
+label bot the right to commit to every repository in the organization.
+
+Its credentials reach the workflows as the organization secrets
+`GUARDENER_BOT_APP_ID` and `GUARDENER_BOT_PRIVATE_KEY`. Every repository that
+calls the gate needs them, so they have to be visible to it — an organization
+secret restricted to selected repositories that omits one is the failure this
+is most often traced back to. Check with:
+
+```sh
+gh api /repos/suiflex/<repo>/actions/organization-secrets --jq '.secrets[].name'
+```
+
+The app needs, and needs no more than:
+
+| Repository permission | Why |
+|---|---|
+| Metadata: read | Required of every app |
+| Contents: read and write | Read a repository's tree and workflows; write the branch and files a `--fix` pull request carries |
+| Checks: read and write | Report the gate result on a pull request |
+| Issues: read and write | Read the label set; keep the standing hygiene issue |
+| Pull requests: read and write | The gate's comment, and opening a `--fix` pull request |
+| Administration: read | Read branch protection, and nothing else — drop it and `exempt = ["branch-protection"]` if that is too much to grant |
+
+No organization permissions, and no webhook: nothing here listens, so the app
+should have its webhook switched off. Each workflow narrows further than this
+through `permission-*` on the token it mints, so a mistake in one workflow
+cannot reach what the others use.
 
 ## Policy
 
@@ -73,8 +114,8 @@ jobs:
     if: github.repository_owner == 'suiflex'
     uses: suiflex/Guardener/.github/workflows/check.yml@main
     secrets:
-      app_id: ${{ secrets.SUIFLEX_BOT_APP_ID }}
-      private_key: ${{ secrets.SUIFLEX_BOT_PRIVATE_KEY }}
+      app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
+      private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
 ```
 
 ## Running it by hand
@@ -105,6 +146,17 @@ GUARDENER_TOKEN=$(gh auth token) cargo run -- hygiene --dry-run
 ```
 
 A real run reads its token from `GUARDENER_TOKEN`.
+
+## Brand
+
+`assets/brand/` holds the mark, the wordmark in both themes, and
+`app-icon.png` — the 512×512 square uploaded as the GitHub App's avatar.
+
+The shield is ForgeGuard's, because this enforces ForgeGuard's standard. It is
+drawn as an outline rather than filled so the two are told apart at the twenty
+pixels a bot avatar actually gets beside a comment, and the eye at its centre
+says what this one does that the other does not: it watches, without being
+asked.
 
 ## Not built yet
 
