@@ -58,6 +58,38 @@ struct Note {
     comment: String,
 }
 
+/// Who wanted this review, which is the one thing that decides whether a bot's
+/// pull request is worth reading.
+///
+/// Nothing else in here branches on it, and nothing else should. It exists
+/// because "not worth reviewing unprompted" and "not worth reviewing when
+/// somebody asked" are different claims, and the code used to make only the
+/// first one and apply it to both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    /// A `/review` comment, or `--repo` and `--pr` typed by hand.
+    ByAPerson,
+    /// The sweep found it. Nobody looked at this pull request and decided it
+    /// needed reading.
+    BySchedule,
+}
+
+impl Asked {
+    /// The comment body for an outcome that has nothing to report.
+    ///
+    /// `None` for a run nobody asked for: a review with nothing to say should
+    /// leave no trace, or every pull request in the organization collects a
+    /// notice that there is no notice. A person who typed `/review` gets the
+    /// sentence instead, because for them an absent comment and a workflow that
+    /// never ran look exactly alike.
+    fn explain(self, reason: &str) -> Option<String> {
+        match self {
+            Asked::ByAPerson => Some(reason.to_string()),
+            Asked::BySchedule => None,
+        }
+    }
+}
+
 pub struct Request<'a> {
     pub registry: &'a Path,
     pub settings: &'a Path,
@@ -87,7 +119,15 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
                 bail!("{repo} is not in the registry; add it before reviewing pull requests there");
             }
             let (owner, name) = split_repo(repo)?;
-            review_one(client, request, &settings, owner, name, number)
+            review_one(
+                client,
+                request,
+                &settings,
+                owner,
+                name,
+                number,
+                Asked::ByAPerson,
+            )
         }
         // `--repo` without `--pr` narrows the sweep to one repository, the same
         // way `hygiene --repo` does. Sweeping the whole organization while
@@ -204,7 +244,15 @@ fn sweep_repository(
         // for a rehearsal of it.
         println!("{}#{number}: stale and never reviewed", entry.name);
         if !client.is_dry_run() {
-            review_one(client, request, settings, owner, name, number)?;
+            review_one(
+                client,
+                request,
+                settings,
+                owner,
+                name,
+                number,
+                Asked::BySchedule,
+            )?;
         }
         spent += 1;
     }
@@ -226,11 +274,17 @@ fn review_one(
     owner: &str,
     name: &str,
     number: u64,
+    asked: Asked,
 ) -> Result<()> {
     let pull_request = client.pull_request(owner, name, number)?;
 
-    // A bot's pull request was not written by anyone who can act on a review.
-    if pull_request["user"]["type"].as_str() == Some("Bot") {
+    // A bot's pull request was not written by anyone who can act on a review,
+    // so nothing reaches for one on its own initiative. A person typing
+    // `/review` overrules that: they looked at this pull request and decided it
+    // was worth reading, which is a better signal than the guess encoded here —
+    // and a change that bumps seven dependencies at once is exactly the kind a
+    // person might want a second pair of eyes on.
+    if asked == Asked::BySchedule && pull_request["user"]["type"].as_str() == Some("Bot") {
         println!("skipped: opened by a bot");
         return client.upsert_comment(owner, name, number, MARKER, None);
     }
@@ -241,7 +295,16 @@ fn review_one(
 
     if changed == 0 {
         println!("skipped: nothing left after filtering");
-        return client.upsert_comment(owner, name, number, MARKER, None);
+        return client.upsert_comment(
+            owner,
+            name,
+            number,
+            MARKER,
+            asked.explain(
+                "Nothing to review: every file this changes is on the skip list — lockfiles, \
+                 generated output, images and the like.",
+            ),
+        );
     }
     if changed > settings.max_changed_lines {
         println!(
@@ -272,7 +335,12 @@ fn review_one(
     let notes = parse(&answer)?;
     println!("{} note(s) over {changed} changed lines", notes.len());
 
-    client.upsert_comment(owner, name, number, MARKER, render(&notes))
+    // An empty answer is the expected one for most pull requests, and an
+    // unprompted run says so by leaving no trace. Somebody who asked out loud
+    // gets told, because to them silence is indistinguishable from a run that
+    // never happened — which is exactly the doubt `/review` exists to remove.
+    let body = render(&notes).or_else(|| asked.explain("Reviewed, and found nothing to raise."));
+    client.upsert_comment(owner, name, number, MARKER, body)
 }
 
 fn now_epoch() -> i64 {
@@ -576,6 +644,18 @@ diff --git a/Cargo.lock b/Cargo.lock
         assert!(!candidate("2026-08-01T00:00:00Z", true, false), "reviewed");
         assert!(!candidate("2026-09-30T00:00:00Z", false, false), "fresh");
         assert!(!candidate("2026-08-01T00:00:00Z", false, true), "a bot's");
+    }
+
+    /// The rule the whole `Asked` distinction exists for: a person who asked
+    /// always gets an answer, and an unprompted run with nothing to say leaves
+    /// the pull request untouched.
+    #[test]
+    fn only_a_person_who_asked_is_told_there_was_nothing_to_say() {
+        assert_eq!(
+            Asked::ByAPerson.explain("nothing to review"),
+            Some("nothing to review".to_string())
+        );
+        assert_eq!(Asked::BySchedule.explain("nothing to review"), None);
     }
 
     /// `--stale-days 0` puts the cutoff at now, so a pull request touched a
