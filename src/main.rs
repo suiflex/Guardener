@@ -9,6 +9,7 @@ mod check;
 mod config;
 mod github;
 mod hygiene;
+mod review;
 
 use std::path::PathBuf;
 
@@ -78,6 +79,26 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Have a model read a pull request and say what the scanner cannot.
+    Review {
+        /// The watched-repository registry.
+        #[arg(long, default_value = "config/repositories.toml")]
+        registry: PathBuf,
+        /// How much of a change is worth reading, and what to leave out.
+        #[arg(long, default_value = "config/review.toml")]
+        settings: PathBuf,
+        /// The repository as owner/name.
+        #[arg(long)]
+        repo: String,
+        /// The pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// Print what would be written to GitHub, and write nothing. The model
+        /// is still asked: what it says is the thing worth previewing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -109,6 +130,27 @@ fn main() -> Result<()> {
                 },
             )
         }
+        Command::Review {
+            registry,
+            settings,
+            repo,
+            pr,
+            dry_run,
+        } => {
+            let client = Client::new(token()?, dry_run);
+            review::run(
+                &client,
+                &review::Request {
+                    registry: &registry,
+                    settings: &settings,
+                    repo: &repo,
+                    pull_request: pr,
+                    endpoint: &required("GUARDENER_MODEL_URL")?,
+                    key: &required("GUARDENER_MODEL_KEY")?,
+                    model: &required("GUARDENER_MODEL")?,
+                },
+            )
+        }
         Command::Hygiene {
             registry,
             labels,
@@ -137,6 +179,16 @@ fn main() -> Result<()> {
 /// contains, or the preview it prints is a guess. So it is read-only, not
 /// offline, and the token is required either way. A read-only personal token is
 /// enough to try one out by hand.
+/// Named rather than defaulted. A missing endpoint should stop the run and say
+/// which variable is missing, not quietly review nothing or, worse, send a
+/// private diff somewhere nobody chose.
+fn required(name: &str) -> Result<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("{name} is not set"))
+}
+
 fn token() -> Result<String> {
     std::env::var("GUARDENER_TOKEN")
         .ok()

@@ -1,0 +1,29 @@
+# How much of a change the review half of Guardener is willing to read.
+#
+# The endpoint, its key, and the model name are all absent on purpose. Together
+# they name a private service, and this file is public — so they arrive from
+# GUARDENER_MODEL_URL, GUARDENER_MODEL_KEY and GUARDENER_MODEL. Changing which
+# model reviews pull requests is then a change to a secret, not a pull request
+# against this repository.
+#
+# What is left here is what is worth arguing about in review.
+
+# Above this, the review is skipped and says so. A model asked to read four
+# thousand changed lines returns paragraphs rather than findings, and a review
+# nobody reads still costs money to produce.
+max_changed_lines = 1500
+
+# Files whose diffs carry no judgement worth paying for. A pattern beginning
+# `*.` matches a suffix; anything else matches anywhere in the path.
+skip = [
+  "*.lock",
+  "*.svg",
+  "*.png",
+  "*.snap",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "Cargo.lock",
+  "/vendor/",
+  "/generated/",
+  ".min.js",
+]

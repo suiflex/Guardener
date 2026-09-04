@@ -97,6 +97,9 @@ blocks on work already in front of the author, never on the history behind it.
 A repository that needs a softer gate says so with its own `mode` in the
 registry.
 
+Setting all of this up — the app, its permissions, the secrets, the model — is
+in [INSTALL.md](INSTALL.md).
+
 ## Turning the gate on for a repository
 
 Add this to the repository as `.github/workflows/guardener.yml` — or let
@@ -158,8 +161,42 @@ pixels a bot avatar actually gets beside a comment, and the eye at its centre
 says what this one does that the other does not: it watches, without being
 asked.
 
+## The review
+
+`guardener review` has a model read the pull request and say what a scanner
+cannot: logic that is wrong, an invariant the change breaks, an error path that
+loses data quietly, a contract its callers will not survive. It is told what
+ForgeGuard already reports so it does not spend the budget re-deriving findings
+that arrive with line numbers attached, and it is asked to return an empty
+answer when nothing meets that bar — which is the expected answer for most pull
+requests.
+
+It is deliberately unequal to the gate. It posts under its own marker, it never
+creates a check run, and the step that runs it carries `continue-on-error`, so
+a model that is slow, wrong or unreachable can never be the reason a pull
+request cannot merge.
+
+It reads the diff from the API rather than a checkout, so unlike the gate it
+needs no clone.
+
+Three environment variables carry the endpoint, and none of them are in this
+repository — together they name a private service, so they arrive as the
+secrets `GUARDENER_MODEL_URL`, `GUARDENER_MODEL_KEY` and `GUARDENER_MODEL`.
+Changing which model reviews pull requests is a change to a secret, not a pull
+request against this repository. The endpoint is expected to answer at
+`<url>/chat/completions` in the shape OpenAI made common, which is also what
+Ollama, vLLM and most gateways speak.
+
+`config/review.toml` holds what is worth arguing about instead: how large a
+change is still worth reading, and which files carry no judgement worth paying
+for.
+
+A repository that passes no `model_url` to the workflow still gets the gate;
+it just gets no second opinion.
+
 ## Not built yet
 
-`review` — a model reading the diff — is next. It will post under its own
-marker, kept apart from the findings above: ForgeGuard's output can be trusted
-and a model's cannot, and the two should not look alike on a pull request page.
+Inline review comments. The model already reports a file and a line, but they
+are rendered as text: placing a remark on the wrong line is worse than placing
+it in a list, and the diff-position arithmetic that avoids that has not been
+written.

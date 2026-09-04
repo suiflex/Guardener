@@ -16,3 +16,6 @@ jobs:
     secrets:
       app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
       private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
+      model_url: ${{ secrets.GUARDENER_MODEL_URL }}
+      model_key: ${{ secrets.GUARDENER_MODEL_KEY }}
+      model: ${{ secrets.GUARDENER_MODEL }}

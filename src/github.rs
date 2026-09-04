@@ -294,6 +294,27 @@ impl Client {
         self.get_text(&format!("{API}/repos/{owner}/{repo}/contents/{path}"))
     }
 
+    pub fn pull_request(&self, owner: &str, repo: &str, number: u64) -> Result<Value> {
+        self.get(&format!("{API}/repos/{owner}/{repo}/pulls/{number}"))
+    }
+
+    /// The pull request as a unified diff.
+    ///
+    /// Asked of GitHub rather than read from a checkout on purpose: a review
+    /// needs the change, not the tree it came from. That keeps this half of
+    /// Guardener free of the clone that the ForgeGuard gate cannot do without,
+    /// so it can run anywhere a token reaches.
+    pub fn pull_request_diff(&self, owner: &str, repo: &str, number: u64) -> Result<String> {
+        let url = format!("{API}/repos/{owner}/{repo}/pulls/{number}");
+        self.decorate(ureq::get(&url))
+            .header("Accept", "application/vnd.github.diff")
+            .call()
+            .with_context(|| format!("GET {url} (diff)"))?
+            .body_mut()
+            .read_to_string()
+            .with_context(|| format!("reading the diff for {owner}/{repo}#{number}"))
+    }
+
     pub fn labels(&self, owner: &str, repo: &str) -> Result<Vec<String>> {
         let value = self.get(&format!("{API}/repos/{owner}/{repo}/labels?per_page=100"))?;
         Ok(value
