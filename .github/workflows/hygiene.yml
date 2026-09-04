@@ -40,11 +40,15 @@ jobs:
           owner: suiflex
           # Reads every repository in the organization, and writes only the
           # standing issue — plus, when a person asks for it, the branch and
-          # pull request that add a missing file.
+          # pull request that add a missing file. `--fix` adds
+          # .github/workflows/*.yml, and GitHub refuses any write to a
+          # workflow path without this: asking it of the app is not enough,
+          # the minted token must name it too.
           permission-administration: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
+          permission-workflows: write
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The commit matters more than usual here. This action keeps one branch
