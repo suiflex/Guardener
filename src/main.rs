@@ -70,6 +70,9 @@ enum Command {
         /// Where the standing report is kept, as owner/name.
         #[arg(long, default_value = "suiflex/Guardener")]
         report_to: String,
+        /// Target a single repository instead of the whole registry.
+        #[arg(long)]
+        repo: Option<String>,
         /// Open a pull request adding the standard files a repository is
         /// missing. Never edits or replaces a file that already exists, and
         /// never changes a setting.
@@ -155,6 +158,7 @@ fn main() -> Result<()> {
             registry,
             labels,
             report_to,
+            repo,
             fix,
             dry_run,
         } => {
@@ -165,6 +169,7 @@ fn main() -> Result<()> {
                     registry: &registry,
                     labels: &labels,
                     report_to: &report_to,
+                    repo: repo.as_deref(),
                     fix,
                 },
             )

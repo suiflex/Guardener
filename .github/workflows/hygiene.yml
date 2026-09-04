@@ -14,11 +14,15 @@ on:
     - cron: '17 6 * * *'
   workflow_dispatch:
     inputs:
+      repo:
+        description: 'Target a single repository (e.g. suiflex/websift). Omit for full sweep.'
+        type: string
+        required: false
+        default: ''
       fix:
         description: 'Open pull requests adding the standard files that are missing'
         type: boolean
         default: false
-
 permissions:
   contents: read
 
@@ -61,5 +65,7 @@ jobs:
         env:
           GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
-          if [ "${{ inputs.fix }}" = "true" ]; then set -- --fix; else set --; fi
+          set --
+          if [ "${{ inputs.fix }}" = "true" ]; then set -- "$@" --fix; fi
+          if [ -n "${{ inputs.repo }}" ]; then set -- "$@" --repo "${{ inputs.repo }}"; fi
           ./target/release/guardener hygiene "$@"

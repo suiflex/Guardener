@@ -100,6 +100,8 @@ pub struct Request<'a> {
     pub labels: &'a std::path::Path,
     /// Where the standing report is kept.
     pub report_to: &'a str,
+    /// Target a single repository instead of the whole registry.
+    pub repo: Option<&'a str>,
     pub fix: bool,
 }
 
@@ -111,12 +113,14 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
     )
     .with_context(|| format!("failed to parse {}", request.labels.display()))?;
 
+    let targets = targets(&registry, request.repo)?;
+
     let mut reports = Vec::new();
-    for entry in &registry.repositories {
-        let mut report = match inspect(client, &entry.name, &expected_labels.names, &entry.exempt) {
+    for (name, exempt) in &targets {
+        let mut report = match inspect(client, name, &expected_labels.names, exempt) {
             Ok(report) => report,
             Err(error) => Report {
-                repo: entry.name.clone(),
+                repo: name.clone(),
                 findings: Vec::new(),
                 fixed: None,
                 skipped: Some(format!("could not be read — {error:#}")),
@@ -131,8 +135,35 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
         reports.push(report);
     }
 
-    let (owner, repo) = split_repo(request.report_to)?;
-    client.upsert_issue(owner, repo, MARKER, ISSUE_TITLE, render(&reports))
+    if let Some(target) = request.repo {
+        if let Some(rendered) = render(&reports) {
+            println!("{rendered}");
+        } else {
+            println!("All standard files and settings in order for {target}.");
+        }
+        Ok(())
+    } else {
+        let (owner, repo) = split_repo(request.report_to)?;
+        client.upsert_issue(owner, repo, MARKER, ISSUE_TITLE, render(&reports))
+    }
+}
+
+fn targets(registry: &Registry, repo: Option<&str>) -> Result<Vec<(String, Vec<String>)>> {
+    match repo {
+        Some(target) => {
+            let _ = split_repo(target)?;
+            if let Some(entry) = registry.find(target) {
+                Ok(vec![(entry.name.clone(), entry.exempt.clone())])
+            } else {
+                Ok(vec![(target.to_string(), Vec::new())])
+            }
+        }
+        None => Ok(registry
+            .repositories
+            .iter()
+            .map(|entry| (entry.name.clone(), entry.exempt.clone()))
+            .collect()),
+    }
 }
 
 fn inspect(
@@ -534,5 +565,72 @@ jobs:
         assert!(is_workflow(".github/workflows/ci.yaml"));
         assert!(!is_workflow(".github/dependabot.yml"));
         assert!(!is_workflow("docs/workflows/ci.yml"));
+    }
+
+    #[test]
+    fn targets_resolves_all_repositories_when_repo_is_none() {
+        let registry = Registry {
+            repositories: vec![
+                crate::config::RepositoryEntry {
+                    name: "suiflex/rdb".to_string(),
+                    mode: None,
+                    rules: Default::default(),
+                    exempt: vec!["branch-protection".to_string()],
+                },
+                crate::config::RepositoryEntry {
+                    name: "suiflex/websift".to_string(),
+                    mode: None,
+                    rules: Default::default(),
+                    exempt: vec![],
+                },
+            ],
+        };
+        let result = targets(&registry, None).unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result[0],
+            (
+                "suiflex/rdb".to_string(),
+                vec!["branch-protection".to_string()]
+            )
+        );
+        assert_eq!(result[1], ("suiflex/websift".to_string(), vec![]));
+    }
+
+    #[test]
+    fn targets_resolves_registered_repository_with_its_exemptions() {
+        let registry = Registry {
+            repositories: vec![crate::config::RepositoryEntry {
+                name: "suiflex/rdb".to_string(),
+                mode: None,
+                rules: Default::default(),
+                exempt: vec!["branch-protection".to_string()],
+            }],
+        };
+        let result = targets(&registry, Some("suiflex/rdb")).unwrap();
+        assert_eq!(
+            result,
+            vec![(
+                "suiflex/rdb".to_string(),
+                vec!["branch-protection".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn targets_resolves_unregistered_valid_repository() {
+        let registry = Registry {
+            repositories: vec![],
+        };
+        let result = targets(&registry, Some("suiflex/custom-repo")).unwrap();
+        assert_eq!(result, vec![("suiflex/custom-repo".to_string(), vec![])]);
+    }
+
+    #[test]
+    fn targets_rejects_invalid_repository_name() {
+        let registry = Registry {
+            repositories: vec![],
+        };
+        assert!(targets(&registry, Some("invalid-name")).is_err());
     }
 }
