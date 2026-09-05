@@ -95,9 +95,26 @@ that calls the gate needs to see them, so set Repository access accordingly.
 | `GUARDENER_MODEL_URL` | base URL, without `/chat/completions` | the review only |
 | `GUARDENER_MODEL_KEY` | the endpoint's key | the review only |
 | `GUARDENER_MODEL` | the model's name at that endpoint | the review only |
+| `GUARDENER_MODEL_VOMIT` | a distinctive phrase from any notice the endpoint bolts on | only if it does |
 
-The three model secrets are optional. A repository that passes no `model_url`
-gets the gate and no second opinion, and says so in its log.
+The model secrets are optional. A repository that passes no `model_url` gets the
+gate and no second opinion, and says so in its log.
+
+`GUARDENER_MODEL_VOMIT` is for the endpoint that appends its own advertising to
+every completion — a nag about a setting, a link to a feature. That text is not
+a reading of the diff and must not reach a pull request, and wherever it lands it
+also breaks parsing, which repeats it into the workflow log through the error.
+One marker per line, and **any line containing one is dropped whole** — from the
+model's answer before it is parsed, and again from the finished comment before it
+is posted. Whole lines rather than "everything after the marker", because a
+notice is not guaranteed to arrive last; cutting to the end would throw away real
+findings that came after one arriving first or in the middle.
+
+Any distinctive phrase from the notice will do — it need not be the opening. A
+notice spanning several lines needs a marker matching each of them. And a notice
+sharing a line with real content takes that line with it, so the answer fails to
+parse or a finding goes missing rather than the notice reaching a pull request:
+this is meant to fail loudly rather than leak.
 
 They are secrets rather than configuration because together they name a private
 service. Keeping them out of the repository also means changing which model
@@ -153,7 +170,9 @@ jobs:
       model: ${{ secrets.GUARDENER_MODEL }}
 ```
 
-Drop the last three lines to run the gate without the review.
+The model secrets are listed for compatibility and are unused: `check.yml` runs
+the gate and nothing else. Nothing reviews on a push — the model is asked by a
+`/review` comment or by the weekly sweep, both below.
 
 **Asking for a review by hand** takes a second file,
 `.github/workflows/review.yml`, which `guardener hygiene --fix` adds alongside

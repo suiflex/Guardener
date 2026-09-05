@@ -29,6 +29,11 @@ on:
         required: false
       model:
         required: false
+      # Text the endpoint adds to every answer of its own accord. A secret
+      # rather than configuration for the same reason the endpoint is one:
+      # naming it here would say publicly which service is behind it.
+      model_vomit:
+        required: false
 
 permissions:
   contents: read
@@ -87,6 +92,7 @@ jobs:
           GUARDENER_MODEL_URL: ${{ secrets.model_url }}
           GUARDENER_MODEL_KEY: ${{ secrets.model_key }}
           GUARDENER_MODEL: ${{ secrets.model }}
+          GUARDENER_MODEL_VOMIT: ${{ secrets.model_vomit }}
         run: |
           if [ -z "$GUARDENER_MODEL_URL" ]; then
             echo "No model endpoint configured for this repository; nothing to ask."

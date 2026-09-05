@@ -163,6 +163,9 @@ fn main() -> Result<()> {
             dry_run,
         } => {
             let client = Client::new(token()?, dry_run);
+            // Optional, unlike the three above: most endpoints answer with the
+            // model's words and nothing else. See review::scrub.
+            let vomit = std::env::var("GUARDENER_MODEL_VOMIT").unwrap_or_default();
             review::run(
                 &client,
                 &review::Request {
@@ -175,6 +178,7 @@ fn main() -> Result<()> {
                     endpoint: &required("GUARDENER_MODEL_URL")?,
                     key: &required("GUARDENER_MODEL_KEY")?,
                     model: &required("GUARDENER_MODEL")?,
+                    vomit: &vomit,
                 },
             )
         }

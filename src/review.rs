@@ -107,6 +107,9 @@ pub struct Request<'a> {
     pub endpoint: &'a str,
     pub key: &'a str,
     pub model: &'a str,
+    /// Markers for text the endpoint adds to every answer of its own accord.
+    /// See `scrub`. Empty when there is none, which is the normal case.
+    pub vomit: &'a str,
 }
 
 pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
@@ -332,7 +335,7 @@ fn review_one(
         title,
         &reviewable,
     )?;
-    let notes = parse(&answer)?;
+    let notes = parse(&scrub(&answer, request.vomit))?;
     println!("{} note(s) over {changed} changed lines", notes.len());
 
     // An empty answer is the expected one for most pull requests, and an
@@ -340,6 +343,12 @@ fn review_one(
     // gets told, because to them silence is indistinguishable from a run that
     // never happened — which is exactly the doubt `/review` exists to remove.
     let body = render(&notes).or_else(|| asked.explain("Reviewed, and found nothing to raise."));
+
+    // Scrubbed a second time, here rather than only above, because this is the
+    // one line every path to the page passes through. The first pass protects
+    // the parse; this one protects the pull request, and catches a notice the
+    // endpoint managed to land inside a finding rather than around it.
+    let body = body.map(|body| scrub(&body, request.vomit));
     client.upsert_comment(owner, name, number, MARKER, body)
 }
 
@@ -478,6 +487,50 @@ fn ask(endpoint: &str, key: &str, model: &str, title: &str, diff: &str) -> Resul
 
 /// Models wrap JSON in a fenced block often enough that refusing to read one
 /// would mean failing on a correct answer.
+/// Cuts the endpoint's own advertising out of a piece of text.
+///
+/// Some gateways bolt a notice onto the completions they return — an advert for
+/// a feature, a nag about a setting. It is not a reading of the diff, it is the
+/// service talking about itself, and it has no business on a pull request in
+/// somebody else's organization. It also breaks parsing wherever it lands,
+/// which repeats it into the workflow log through the error.
+///
+/// The markers arrive from `GUARDENER_MODEL_VOMIT` rather than living here, for
+/// the same reason the endpoint does: which service is in use, and what it says
+/// about itself, is not something a public repository should spell out. Nothing
+/// in this file may name one, tests included. Empty or unset means no
+/// scrubbing, which is the normal case.
+///
+/// **Whole lines go.** One marker per line of the variable, and any line of the
+/// text containing one is dropped entirely. Deliberately not "cut from the
+/// marker onwards": a notice is not guaranteed to be the last thing in an
+/// answer, and cutting to the end would throw away everything after a notice
+/// that arrived first or in the middle.
+///
+/// Two consequences worth knowing, both chosen on the same principle — this
+/// must never leak, so it fails loudly instead:
+///
+/// - A notice sharing a line with real content takes that line with it. The
+///   answer then fails to parse, or a finding goes missing, rather than the
+///   notice reaching the pull request.
+/// - A notice spanning several lines needs a marker matching each of them.
+///   Any distinctive word on the line will do — unlike the earlier rule, the
+///   marker no longer has to be the notice's opening.
+fn scrub(text: &str, markers: &str) -> String {
+    let markers: Vec<&str> = markers
+        .lines()
+        .map(str::trim)
+        .filter(|marker| !marker.is_empty())
+        .collect();
+    if markers.is_empty() {
+        return text.to_string();
+    }
+    text.lines()
+        .filter(|line| !markers.iter().any(|marker| line.contains(marker)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn parse(answer: &str) -> Result<Vec<Note>> {
     let trimmed = answer.trim();
     let unfenced = trimmed
@@ -649,6 +702,94 @@ diff --git a/Cargo.lock b/Cargo.lock
     /// The rule the whole `Asked` distinction exists for: a person who asked
     /// always gets an answer, and an unprompted run with nothing to say leaves
     /// the pull request untouched.
+    /// Appended after the JSON — the shape that started this. Without the
+    /// scrub the answer fails to parse and the notice is repeated in the error,
+    /// and so into the workflow log.
+    ///
+    /// Every sample here is invented. Real markers belong in the secret and
+    /// nowhere else: a test using one would publish, in a public repository,
+    /// most of the value the secret exists to keep out of it.
+    #[test]
+    fn a_notice_after_the_json_is_cut_away() {
+        let answer = "[{\"path\":\"a.rs\",\"comment\":\"the retry loses the error\"}]\n\n\
+             * Upgrade for faster answers: https://example.invalid/upgrade";
+        let notes = parse(&scrub(answer, "Upgrade for")).expect("the JSON survives");
+
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].comment, "the retry loses the error");
+    }
+
+    /// Before the JSON, and in the middle of it. Dropping the marker's line
+    /// rather than everything from the marker on is what makes these work — a
+    /// notice is not guaranteed to arrive last.
+    #[test]
+    fn a_notice_before_or_between_the_json_leaves_it_whole() {
+        let leading = "* Upgrade for faster answers.\n\
+             [{\"path\":\"a.rs\",\"comment\":\"kept\"}]";
+        let notes = parse(&scrub(leading, "Upgrade for")).expect("leading notice");
+        assert_eq!(notes[0].comment, "kept");
+
+        let middle = "[\n\
+             {\"path\":\"a.rs\",\"comment\":\"first\"},\n\
+             * Upgrade for faster answers.\n\
+             {\"path\":\"b.rs\",\"comment\":\"second\"}\n\
+             ]";
+        let notes = parse(&scrub(middle, "Upgrade for")).expect("notice in the middle");
+        assert_eq!(notes.len(), 2, "nothing after the notice was thrown away");
+        assert_eq!(notes[1].comment, "second");
+    }
+
+    /// A marker matching any part of the line is enough — it need not be the
+    /// notice's opening, which the earlier cut-to-the-end rule demanded.
+    #[test]
+    fn a_marker_from_the_middle_of_the_line_still_removes_it() {
+        let answer = "[]\n\u{2605} Notice: see https://example.invalid/x for details.";
+        assert_eq!(scrub(answer, "example.invalid"), "[]");
+    }
+
+    /// The second scrub, on the rendered comment, is what stands between a
+    /// notice the endpoint buried inside a finding and the pull request page.
+    #[test]
+    fn the_rendered_comment_is_scrubbed_before_it_is_posted() {
+        let body = render(&[
+            Note {
+                path: "a.rs".to_string(),
+                line: None,
+                severity: None,
+                comment: "a real finding".to_string(),
+            },
+            Note {
+                path: "b.rs".to_string(),
+                line: None,
+                severity: None,
+                comment: "Upgrade for faster answers: https://example.invalid".to_string(),
+            },
+        ])
+        .expect("a comment");
+        let cleaned = scrub(&body, "Upgrade for");
+
+        assert!(cleaned.contains("a real finding"));
+        assert!(!cleaned.contains("Upgrade"));
+        assert!(!cleaned.contains("example.invalid"));
+    }
+
+    /// The normal case, and the one that must not change: no markers set, so
+    /// the answer is passed through unchanged.
+    #[test]
+    fn no_markers_means_no_scrubbing() {
+        let answer = "[{\"path\":\"a.rs\",\"comment\":\"keep every word of this\"}]";
+        assert_eq!(scrub(answer, ""), answer);
+        assert_eq!(scrub(answer, "   \n  \n"), answer);
+    }
+
+    /// A marker that never appears leaves the answer alone, rather than
+    /// truncating it somewhere arbitrary.
+    #[test]
+    fn a_marker_that_is_absent_changes_nothing() {
+        let answer = "[{\"path\":\"a.rs\",\"comment\":\"untouched\"}]";
+        assert_eq!(scrub(answer, "no such notice here"), answer);
+    }
+
     #[test]
     fn only_a_person_who_asked_is_told_there_was_nothing_to_say() {
         assert_eq!(

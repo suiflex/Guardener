@@ -74,6 +74,7 @@ jobs:
           GUARDENER_MODEL_URL: ${{ secrets.GUARDENER_MODEL_URL }}
           GUARDENER_MODEL_KEY: ${{ secrets.GUARDENER_MODEL_KEY }}
           GUARDENER_MODEL: ${{ secrets.GUARDENER_MODEL }}
+          GUARDENER_MODEL_VOMIT: ${{ secrets.GUARDENER_MODEL_VOMIT }}
           STALE_DAYS: ${{ inputs.stale_days || '0' }}
           MAX: ${{ inputs.max || '30' }}
         run: |
