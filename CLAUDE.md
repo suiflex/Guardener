@@ -56,8 +56,9 @@ Tests are `#[cfg(test)]` modules at the bottom of each `src/*.rs`. No integratio
   dictates design: a new capability ships as a *new* stub file, because one bolted onto an
   already-installed `guardener.yml` could never be rolled out without hand-written PRs.
   Editing an installed stub is `scripts/sync-stubs.sh`, run by a person, one named template
-  at a time — never the bot, and never all templates at once: a repository is allowed to have
-  grown past its stub, and ForgeGuard's `suiflex.yml` has.
+  at a time, and through a pull request per repository — never the bot, never a direct commit
+  (the default branches are protected), and never all templates at once: a repository is
+  allowed to have grown past its stub, and ForgeGuard's `suiflex.yml` has.
 - **The daily hygiene schedule never passes `--fix`.** That stays a `workflow_dispatch` a
   person triggers.
 - **`review` can never block a merge.** No check run, own comment marker, and it runs in its

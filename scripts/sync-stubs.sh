@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Brings the stub workflows already installed across the organization back in
-# line with templates/workflows/.
+# line with templates/workflows/, through a pull request per repository.
 #
 # This exists because `hygiene --fix` only ever adds. That rule is deliberate and
 # not up for negotiation — a bot that quietly revises decisions across an
@@ -8,13 +8,15 @@
 # real gap: once a stub is installed, no change to the template ever reaches it.
 # Adding a secret to templates/workflows/review.yml is the case that found this.
 #
-# So the edit happens here instead, and the difference that matters is who runs
-# it. Nothing schedules this. It is a person, at a keyboard, who has read the
-# diff it prints first — the same bargain as `hygiene --fix` living behind a
-# workflow_dispatch rather than the daily cron.
+# So the edit happens here instead, and two things keep it honest. Nothing
+# schedules this — it is a person, at a keyboard, who has read the diff it prints
+# first. And it opens a pull request rather than committing: these are public
+# repositories, most of them protect their default branch, and a change to
+# .github/workflows/ is exactly the kind that should be read by someone before it
+# lands. Same shape as `hygiene --fix`, which never commits directly either.
 #
 #   ./scripts/sync-stubs.sh                            # drift, every template
-#   ./scripts/sync-stubs.sh --apply review.yml         # replace that one file
+#   ./scripts/sync-stubs.sh --apply review.yml         # open the PRs for it
 #   ./scripts/sync-stubs.sh --apply review.yml websift # in that one repository
 #
 # Reporting covers every template, because reading is free and seeing the whole
@@ -27,8 +29,9 @@
 # fix. A blanket sync would have deleted it and the reason for it. A stub is a
 # starting point, and repositories are allowed to have grown past theirs.
 #
-# Needs `gh` authenticated with permission to write .github/workflows/ in each
-# repository, which is a scope a personal token does not carry by default.
+# Needs `gh` authenticated with permission to write .github/workflows/ and open
+# pull requests in each repository — a scope a personal token does not carry by
+# default.
 
 set -euo pipefail
 
@@ -65,6 +68,39 @@ while IFS= read -r line; do
 done < <(sed -n 's/^name = "\(.*\)"$/\1/p' "$REGISTRY")
 [ $# -gt 0 ] && repos=("$@")
 
+# Branch, commit and pull request for one file in one repository.
+#
+# Refuses when the branch is already there rather than force anything, the same
+# answer `hygiene --fix` gives: an unmerged branch from an earlier run is
+# somebody's unfinished business, not this script's to overwrite.
+open_pr() {
+  local repo=$1 base=$2 path=$3 template=$4 sha=$5
+  local name branch head
+  name=$(basename "$template")
+  branch="guardener/sync-${name%.yml}"
+
+  if gh api "/repos/$repo/git/ref/heads/$branch" >/dev/null 2>&1; then
+    printf '  %s already exists — left as it is\n' "$branch"
+    return 0
+  fi
+
+  head=$(gh api "/repos/$repo/git/ref/heads/$base" --jq .object.sha)
+  gh api -X POST "/repos/$repo/git/refs" \
+    -f ref="refs/heads/$branch" -f sha="$head" >/dev/null
+
+  gh api -X PUT "/repos/$repo/contents/$path" \
+    -f message="ci: sync $name with the organization template" \
+    -f branch="$branch" \
+    -f sha="$sha" \
+    -f content="$(base64 < "$template" | tr -d '\n')" >/dev/null
+
+  gh api -X POST "/repos/$repo/pulls" \
+    -f title="ci: sync $name with the organization template" \
+    -f head="$branch" -f base="$base" \
+    -f body="Brings \`$path\` back in line with \`templates/workflows/$name\` in suiflex/Guardener. Opened by \`scripts/sync-stubs.sh\`; the diff is the whole change." \
+    --jq '"  " + .html_url'
+}
+
 # One template against one repository. Returns 1 when they differ, so the caller
 # can tell at the end whether anything is out of step.
 #
@@ -72,18 +108,18 @@ done < <(sed -n 's/^name = "\(.*\)"$/\1/p' "$REGISTRY")
 # questions — which repositories to walk, against whether one file in one of them
 # matches — and reading it as a single doubly-nested block meant holding both.
 check_one() {
-  local repo=$1 branch=$2 template=$3
+  local repo=$1 base=$2 template=$3
   local name path meta sha installed
   name=$(basename "$template")
   path=".github/workflows/$name"
 
-  # Report on everything; write only to the one file named on the command line,
-  # so nothing is overwritten as a side effect of looking.
+  # Report on everything; write only for the one file named on the command line,
+  # so nothing is touched as a side effect of looking.
   if [ -n "$apply" ] && [ "$name" != "$only" ]; then
     return 0
   fi
 
-  if ! meta=$(gh api "/repos/$repo/contents/$path?ref=$branch" 2>/dev/null); then
+  if ! meta=$(gh api "/repos/$repo/contents/$path?ref=$base" 2>/dev/null); then
     # Absent is hygiene's job, not this script's: `--fix` adds, and adding is
     # the one thing it is allowed to do.
     printf '%-24s %-34s absent — `hygiene --fix` adds it\n' "$repo" "$path"
@@ -97,27 +133,20 @@ check_one() {
     return 0
   fi
 
-  printf '%-24s %-34s DRIFTED on %s\n' "$repo" "$path" "$branch"
+  printf '%-24s %-34s DRIFTED on %s\n' "$repo" "$path" "$base"
   diff -u --label "installed" <(printf '%s' "$installed") \
           --label "template"  "$template" || true
 
-  if [ -n "$apply" ]; then
-    gh api -X PUT "/repos/$repo/contents/$path" \
-      -f message="ci: sync $name with the organization template" \
-      -f branch="$branch" \
-      -f sha="$sha" \
-      -f content="$(base64 < "$template" | tr -d '\n')" \
-      --jq '"  committed " + .commit.sha'
-  fi
+  [ -n "$apply" ] && open_pr "$repo" "$base" "$path" "$template" "$sha"
   return 1
 }
 
 # Every template against one repository. Returns 1 if any of them differ.
 check_repo() {
-  local repo=$1 branch=$2
+  local repo=$1 base=$2
   local template rc=0
   for template in "$TEMPLATES"/*.yml; do
-    check_one "$repo" "$branch" "$template" || rc=1
+    check_one "$repo" "$base" "$template" || rc=1
   done
   return $rc
 }
@@ -130,11 +159,11 @@ for repo in "${repos[@]}"; do
     continue
   fi
 
-  branch=$(gh api "/repos/$repo" --jq .default_branch)
-  check_repo "$repo" "$branch" || drift=1
+  base=$(gh api "/repos/$repo" --jq .default_branch)
+  check_repo "$repo" "$base" || drift=1
 done
 
 if [ -z "$apply" ] && [ "$drift" = 1 ]; then
   echo
-  echo "Nothing was written. Re-run with --apply once the diffs above look right."
+  echo "Nothing was written. Re-run with --apply <template> once the diffs look right."
 fi

@@ -58,8 +58,9 @@ hygiene-fix: build ## Preview the hygiene sweep with its fixes
 
 # What hygiene deliberately cannot do. `--fix` only ever adds, so a change to a
 # template never reaches a stub already installed; this shows which ones have
-# fallen behind. Read-only. Writing needs the script directly, one named file at
-# a time — see the header of scripts/sync-stubs.sh for why.
+# fallen behind. Read-only. Updating needs the script directly, one named file at
+# a time, and it opens a pull request per repository rather than committing —
+# see the header of scripts/sync-stubs.sh for why.
 .PHONY: stubs
 stubs: ## Show which installed stub workflows have drifted from templates/
 	./scripts/sync-stubs.sh
