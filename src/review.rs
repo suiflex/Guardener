@@ -480,6 +480,16 @@ fn changed_lines(diff: &str) -> usize {
         .count()
 }
 
+/// Whether a failed request is worth sending a second time.
+///
+/// A status code is the endpoint's considered answer — it read the request and
+/// said no, and asking again changes nothing. Everything else is the connection
+/// failing underneath: a dropped socket, a name that would not resolve, a proxy
+/// that hung up. Those are worth one more try.
+fn worth_retrying(error: &ureq::Error) -> bool {
+    !matches!(error, ureq::Error::StatusCode(_))
+}
+
 fn ask(endpoint: &str, key: &str, model: &str, title: &str, diff: &str) -> Result<String> {
     let system = format!(
         "You review a pull request diff for the suiflex organization. A deterministic scanner \
@@ -496,13 +506,8 @@ fn ask(endpoint: &str, key: &str, model: &str, title: &str, diff: &str) -> Resul
          (one of \"high\", \"medium\", \"low\") and \"comment\". No prose around it."
     );
 
-    let response: Value = ureq::post(&format!(
-        "{}/chat/completions",
-        endpoint.trim_end_matches('/')
-    ))
-    .header("Authorization", &format!("Bearer {key}"))
-    .header("Content-Type", "application/json")
-    .send_json(json!({
+    let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    let payload = json!({
         "model": model,
         // Zero because the same diff should not draw a different review on
         // a rerun; a comment that changes when nothing changed teaches
@@ -512,11 +517,44 @@ fn ask(endpoint: &str, key: &str, model: &str, title: &str, diff: &str) -> Resul
             { "role": "system", "content": system },
             { "role": "user", "content": format!("Pull request: {title}\n\n{diff}") },
         ],
-    }))
-    .context("the model endpoint rejected the request")?
-    .body_mut()
-    .read_json()
-    .context("the model endpoint returned something that is not JSON")?;
+    });
+
+    // Asked twice at most, and only when the connection died rather than the
+    // request being refused. Observed on this organization: the same pull
+    // request reviewed cleanly at 07:37 and dropped mid-request at 07:50, with
+    // no HTTP status either time — the endpoint closing a TCP connection
+    // without a TLS shutdown. That is worth one more try; a 401 or a 404 is
+    // not, and repeating it would only spend the budget twice on the same
+    // wrong key or path.
+    //
+    // One retry, not a backoff loop: if the endpoint is genuinely down, this
+    // should fail while a person is still looking at the tab.
+    let mut response = None;
+    for attempt in 1..=2 {
+        let sent = ureq::post(&url)
+            .header("Authorization", &format!("Bearer {key}"))
+            .header("Content-Type", "application/json")
+            .send_json(&payload);
+        match sent {
+            Ok(ok) => {
+                response = Some(ok);
+                break;
+            }
+            Err(error) if attempt == 1 && worth_retrying(&error) => {
+                // The endpoint is not named, here or anywhere else this prints:
+                // it arrives as a secret precisely so it stays out of the log.
+                println!("the connection to the model dropped; asking once more");
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+            Err(error) => return Err(error).context("the model endpoint rejected the request"),
+        }
+    }
+
+    let response: Value = response
+        .expect("the loop either sets a response or returns")
+        .body_mut()
+        .read_json()
+        .context("the model endpoint returned something that is not JSON")?;
 
     if let Some(usage) = response.get("usage") {
         println!("tokens: {usage}");
@@ -856,6 +894,18 @@ diff --git a/Cargo.lock b/Cargo.lock
         ] {
             assert_eq!(civil_from_days(days_from_civil(y, m, d)), (y, m, d));
         }
+    }
+
+    /// The line the retry turns on. A status code is an answer and asking again
+    /// wastes the budget; a dropped connection is not, and is the failure that
+    /// actually happened here — twice, on a pull request that reviewed cleanly
+    /// thirteen minutes earlier.
+    #[test]
+    fn only_a_dropped_connection_is_asked_again() {
+        assert!(!worth_retrying(&ureq::Error::StatusCode(401)));
+        assert!(!worth_retrying(&ureq::Error::StatusCode(404)));
+        assert!(!worth_retrying(&ureq::Error::StatusCode(500)));
+        assert!(worth_retrying(&ureq::Error::HostNotFound));
     }
 
     /// The normal case, and the one that must not change: no markers set, so
