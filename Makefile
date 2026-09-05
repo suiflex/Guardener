@@ -56,6 +56,14 @@ hygiene: build ## Preview the hygiene sweep against the organization
 hygiene-fix: build ## Preview the hygiene sweep with its fixes
 	./$(BIN) hygiene --fix --dry-run
 
+# What hygiene deliberately cannot do. `--fix` only ever adds, so a change to a
+# template never reaches a stub already installed; this shows which ones have
+# fallen behind. Read-only. Writing needs the script directly, one named file at
+# a time — see the header of scripts/sync-stubs.sh for why.
+.PHONY: stubs
+stubs: ## Show which installed stub workflows have drifted from templates/
+	./scripts/sync-stubs.sh
+
 # Runs the gate against a checkout you already have, as the bot would see it.
 #   make gate ROOT=../ForgeGuard REPO=suiflex/ForgeGuard PR=66 BASE=origin/main
 ROOT ?= .

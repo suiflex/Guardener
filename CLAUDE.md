@@ -35,6 +35,7 @@ make            # list targets
 make verify     # fmt + lint + test — exactly what CI runs, in CI's order
 make fix        # cargo fmt --all
 make hygiene    # preview the org sweep, writes nothing
+make stubs      # which installed stub workflows have fallen behind templates/
 make gate ROOT=../ForgeGuard REPO=suiflex/ForgeGuard PR=66 BASE=origin/main
 ```
 
@@ -54,6 +55,9 @@ Tests are `#[cfg(test)]` modules at the bottom of each `src/*.rs`. No integratio
   that quietly revises decisions org-wide is worse than the drift it catches. This also
   dictates design: a new capability ships as a *new* stub file, because one bolted onto an
   already-installed `guardener.yml` could never be rolled out without hand-written PRs.
+  Editing an installed stub is `scripts/sync-stubs.sh`, run by a person, one named template
+  at a time — never the bot, and never all templates at once: a repository is allowed to have
+  grown past its stub, and ForgeGuard's `suiflex.yml` has.
 - **The daily hygiene schedule never passes `--fix`.** That stays a `workflow_dispatch` a
   person triggers.
 - **`review` can never block a merge.** No check run, own comment marker, and it runs in its
