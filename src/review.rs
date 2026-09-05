@@ -280,6 +280,26 @@ fn review_one(
     asked: Asked,
 ) -> Result<()> {
     let pull_request = client.pull_request(owner, name, number)?;
+    let head_sha = pull_request["head"]["sha"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    // Every path to the page goes through here, so that scrubbing and stamping
+    // cannot be forgotten by one of them.
+    //
+    // The stamp is what makes asking twice visible. Two runs over an untouched
+    // pull request reach the same conclusion in the same words, and editing a
+    // comment to exactly what it already said moves nothing on the page — which
+    // from the outside is indistinguishable from a workflow that never fired.
+    //
+    // Scrubbed first, stamped second, never the other way round: the stamp is
+    // Guardener's own words and has no business being matched against the
+    // endpoint's markers.
+    let post = |body: Option<String>| {
+        let body = body.map(|body| scrub(&body, request.vomit) + &stamp(&head_sha, now_epoch()));
+        client.upsert_comment(owner, name, number, MARKER, body)
+    };
 
     // A bot's pull request was not written by anyone who can act on a review,
     // so nothing reaches for one on its own initiative. A person typing
@@ -289,7 +309,7 @@ fn review_one(
     // person might want a second pair of eyes on.
     if asked == Asked::BySchedule && pull_request["user"]["type"].as_str() == Some("Bot") {
         println!("skipped: opened by a bot");
-        return client.upsert_comment(owner, name, number, MARKER, None);
+        return post(None);
     }
 
     let diff = client.pull_request_diff(owner, name, number)?;
@@ -298,33 +318,21 @@ fn review_one(
 
     if changed == 0 {
         println!("skipped: nothing left after filtering");
-        return client.upsert_comment(
-            owner,
-            name,
-            number,
-            MARKER,
-            asked.explain(
-                "Nothing to review: every file this changes is on the skip list — lockfiles, \
-                 generated output, images and the like.",
-            ),
-        );
+        return post(asked.explain(
+            "Nothing to review: every file this changes is on the skip list — lockfiles, \
+             generated output, images and the like.",
+        ));
     }
     if changed > settings.max_changed_lines {
         println!(
             "skipped: {changed} changed lines exceeds {}",
             settings.max_changed_lines
         );
-        return client.upsert_comment(
-            owner,
-            name,
-            number,
-            MARKER,
-            Some(format!(
-                "Not reviewed: {changed} changed lines is past the {} this is configured to read. \
-                 A review of a change this size would be too shallow to trust.",
-                settings.max_changed_lines
-            )),
-        );
+        return post(Some(format!(
+            "Not reviewed: {changed} changed lines is past the {} this is configured to read. \
+             A review of a change this size would be too shallow to trust.",
+            settings.max_changed_lines
+        )));
     }
 
     let title = pull_request["title"].as_str().unwrap_or("");
@@ -342,14 +350,7 @@ fn review_one(
     // unprompted run says so by leaving no trace. Somebody who asked out loud
     // gets told, because to them silence is indistinguishable from a run that
     // never happened — which is exactly the doubt `/review` exists to remove.
-    let body = render(&notes).or_else(|| asked.explain("Reviewed, and found nothing to raise."));
-
-    // Scrubbed a second time, here rather than only above, because this is the
-    // one line every path to the page passes through. The first pass protects
-    // the parse; this one protects the pull request, and catches a notice the
-    // endpoint managed to land inside a finding rather than around it.
-    let body = body.map(|body| scrub(&body, request.vomit));
-    client.upsert_comment(owner, name, number, MARKER, body)
+    post(render(&notes).or_else(|| asked.explain("Reviewed, and found nothing to raise.")))
 }
 
 fn now_epoch() -> i64 {
@@ -395,6 +396,47 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     era * 146_097 + day_of_era - 719_468
+}
+
+/// The inverse of `days_from_civil`, by the same algorithm run backwards.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    (year + i64::from(month <= 2), month, day)
+}
+
+/// The line that proves a review actually ran.
+///
+/// Without it, asking twice for a pull request nobody has touched produces the
+/// same words as last time, so the comment is edited to exactly what it already
+/// said and the page does not move — indistinguishable from a workflow that
+/// never fired. Somebody who typed `/review` is owed better than "look closely
+/// and trust me". The commit says what was read, the clock says when.
+fn stamp(head_sha: &str, at: i64) -> String {
+    let (year, month, day) = civil_from_days(at.div_euclid(86_400));
+    let seconds = at.rem_euclid(86_400);
+    format!(
+        "\n\n<sub>Read `{}` at {year:04}-{month:02}-{day:02} {:02}:{:02} UTC.</sub>",
+        head_sha.get(..7).unwrap_or(head_sha),
+        seconds / 3600,
+        (seconds % 3600) / 60,
+    )
 }
 
 /// Drops whole files from the diff rather than individual hunks: a file worth
@@ -771,6 +813,49 @@ diff --git a/Cargo.lock b/Cargo.lock
         assert!(cleaned.contains("a real finding"));
         assert!(!cleaned.contains("Upgrade"));
         assert!(!cleaned.contains("example.invalid"));
+    }
+
+    /// The whole reason the stamp exists: two runs over an untouched pull
+    /// request must not produce the same comment, or editing it moves nothing
+    /// on the page and the person who asked cannot tell it ran.
+    #[test]
+    fn two_runs_a_minute_apart_do_not_produce_the_same_comment() {
+        let at = 1_788_611_696;
+        assert_ne!(stamp("b88c151aaa", at), stamp("b88c151aaa", at + 60));
+    }
+
+    /// The stamp names the commit that was read, short, so a reader can see
+    /// whether a re-run was over new work or the same work.
+    #[test]
+    fn the_stamp_names_the_commit_it_read() {
+        let line = stamp("b88c151deadbeef", 1_788_611_696);
+        assert!(line.contains("b88c151"), "{line}");
+        assert!(!line.contains("deadbeef"), "shortened: {line}");
+        assert!(line.contains("2026-09-05"), "{line}");
+    }
+
+    /// A short or absent sha must not panic on the slice.
+    #[test]
+    fn the_stamp_survives_a_sha_it_cannot_shorten() {
+        assert!(stamp("", 0).contains("``"));
+        assert!(stamp("abc", 0).contains("abc"));
+    }
+
+    /// `civil_from_days` is only correct if it inverts `days_from_civil`, so
+    /// check it against the dates most likely to break either: the leap day and
+    /// the century that skips one.
+    #[test]
+    fn the_calendar_round_trips() {
+        for (y, m, d) in [
+            (1970, 1, 1),
+            (2000, 2, 29),
+            (2024, 2, 29),
+            (2100, 2, 28),
+            (2100, 3, 1),
+            (2026, 9, 5),
+        ] {
+            assert_eq!(civil_from_days(days_from_civil(y, m, d)), (y, m, d));
+        }
     }
 
     /// The normal case, and the one that must not change: no markers set, so
