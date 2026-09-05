@@ -73,9 +73,15 @@ done < <(sed -n 's/^name = "\(.*\)"$/\1/p' "$REGISTRY")
 # Refuses when the branch is already there rather than force anything, the same
 # answer `hygiene --fix` gives: an unmerged branch from an earlier run is
 # somebody's unfinished business, not this script's to overwrite.
+# Every call is checked and its failure printed. That is not belt and braces:
+# these functions are invoked from `||` lists, which switches `set -e` off for
+# everything inside them, so an unchecked `gh` failure here would print its
+# error and the walk would carry on as if the pull request had been opened. The
+# first run of this against the organization did exactly that — one repository
+# got its pull request and five silently got nothing.
 open_pr() {
   local repo=$1 base=$2 path=$3 template=$4 sha=$5
-  local name branch head
+  local name branch head out
   name=$(basename "$template")
   branch="guardener/sync-${name%.yml}"
 
@@ -84,21 +90,35 @@ open_pr() {
     return 0
   fi
 
-  head=$(gh api "/repos/$repo/git/ref/heads/$base" --jq .object.sha)
-  gh api -X POST "/repos/$repo/git/refs" \
-    -f ref="refs/heads/$branch" -f sha="$head" >/dev/null
+  if ! head=$(gh api "/repos/$repo/git/ref/heads/$base" --jq .object.sha 2>&1); then
+    printf '  FAILED reading the tip of %s: %s\n' "$base" "$head"
+    return 1
+  fi
+  if ! out=$(gh api -X POST "/repos/$repo/git/refs" \
+      -f ref="refs/heads/$branch" -f sha="$head" 2>&1); then
+    printf '  FAILED creating %s: %s\n' "$branch" "$out"
+    return 1
+  fi
+  if ! out=$(gh api -X PUT "/repos/$repo/contents/$path" \
+      -f message="ci: sync $name with the organization template" \
+      -f branch="$branch" \
+      -f sha="$sha" \
+      -f content="$(base64 < "$template" | tr -d '\n')" 2>&1); then
+    printf '  FAILED writing %s on %s: %s\n' "$path" "$branch" "$out"
+    return 1
+  fi
+  if ! out=$(gh api -X POST "/repos/$repo/pulls" \
+      -f title="ci: sync $name with the organization template" \
+      -f head="$branch" -f base="$base" \
+      -f body="Brings \`$path\` back in line with \`templates/workflows/$name\` in suiflex/Guardener. Opened by \`scripts/sync-stubs.sh\`; the diff is the whole change." \
+      --jq .html_url 2>&1); then
+    printf '  FAILED opening the pull request: %s\n' "$out"
+    return 1
+  fi
 
-  gh api -X PUT "/repos/$repo/contents/$path" \
-    -f message="ci: sync $name with the organization template" \
-    -f branch="$branch" \
-    -f sha="$sha" \
-    -f content="$(base64 < "$template" | tr -d '\n')" >/dev/null
-
-  gh api -X POST "/repos/$repo/pulls" \
-    -f title="ci: sync $name with the organization template" \
-    -f head="$branch" -f base="$base" \
-    -f body="Brings \`$path\` back in line with \`templates/workflows/$name\` in suiflex/Guardener. Opened by \`scripts/sync-stubs.sh\`; the diff is the whole change." \
-    --jq '"  " + .html_url'
+  printf '  %s\n' "$out"
+  opened=$((opened + 1))
+  return 0
 }
 
 # One template against one repository. Returns 1 when they differ, so the caller
@@ -137,7 +157,9 @@ check_one() {
   diff -u --label "installed" <(printf '%s' "$installed") \
           --label "template"  "$template" || true
 
-  [ -n "$apply" ] && open_pr "$repo" "$base" "$path" "$template" "$sha"
+  if [ -n "$apply" ]; then
+    open_pr "$repo" "$base" "$path" "$template" "$sha" || failed=$((failed + 1))
+  fi
   return 1
 }
 
@@ -152,6 +174,8 @@ check_repo() {
 }
 
 drift=0
+opened=0
+failed=0
 for repo in "${repos[@]}"; do
   case "$repo" in */*) ;; *) repo="suiflex/$repo" ;; esac
   if [ "$repo" = "$SELF" ]; then
@@ -159,11 +183,21 @@ for repo in "${repos[@]}"; do
     continue
   fi
 
-  base=$(gh api "/repos/$repo" --jq .default_branch)
+  # Checked rather than left to `set -e`, which would abandon every repository
+  # after this one over a single unlucky call.
+  if ! base=$(gh api "/repos/$repo" --jq .default_branch 2>&1); then
+    printf '%-24s FAILED reading the default branch: %s\n' "$repo" "$base"
+    failed=$((failed + 1))
+    continue
+  fi
   check_repo "$repo" "$base" || drift=1
 done
 
-if [ -z "$apply" ] && [ "$drift" = 1 ]; then
-  echo
+echo
+if [ -n "$apply" ]; then
+  # Said out loud, and counted, so "it ran" is never mistaken for "it worked".
+  echo "$opened pull request(s) opened, $failed failure(s)."
+  [ "$failed" = 0 ] || exit 1
+elif [ "$drift" = 1 ]; then
   echo "Nothing was written. Re-run with --apply <template> once the diffs look right."
 fi
