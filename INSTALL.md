@@ -200,9 +200,9 @@ a read-only token cannot create a check run.
 Two things follow that are easy to trip over. A change to the reporting half
 only takes effect once it is on the default branch — GitHub never runs a pull
 request's copy of a `workflow_run` workflow. And a repository still carrying the
-older single-file stub fails the gate deliberately, with a message naming these
-two files: under `pull_request_target` the scanning half would read the base
-branch and report every pull request as clean.
+older single-file stub keeps working exactly as it did, reporting from the one
+job, with a notice on each run saying what to move; the one thing it does not
+get is a gate on pull requests from forks, which is what migrating buys.
 
 Nothing reviews on a push — the model is asked by a `/review` comment or by the
 weekly sweep, both below.
