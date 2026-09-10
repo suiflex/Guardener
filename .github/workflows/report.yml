@@ -27,6 +27,10 @@ on:
 
 permissions:
   contents: read
+  # Reading an artifact belonging to another workflow run needs this. It is on
+  # the job's own token rather than the app's, so the app token below can stay
+  # narrowed to the two things it actually writes.
+  actions: read
 
 jobs:
   report:
@@ -52,7 +56,11 @@ jobs:
           name: guardener-findings
           path: findings
           run-id: ${{ github.event.workflow_run.id }}
-          github-token: ${{ steps.app-token.outputs.token }}
+          # The job's own token, which the block above gives `actions: read`.
+          # The app token cannot do this: it is granted checks and pull
+          # requests, and widening it to reach one artifact would widen it
+          # everywhere the app is installed.
+          github-token: ${{ github.token }}
 
       # The scan wrote this, and the scan ran on a fork's code. Everything else
       # the report needs comes from this workflow's own event; the number is the
