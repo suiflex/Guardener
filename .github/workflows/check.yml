@@ -9,6 +9,13 @@
 # to GitHub. The half that holds credentials is report.yml, and that one never
 # checks the branch out.
 #
+# One exception, and it is temporary: a repository still on the single-workflow
+# stub calls this from pull_request_target, and those runs keep the old
+# behaviour — head checkout, one pass, reported from here with the app token.
+# Every step on that path is marked `legacy` and goes away once the last
+# repository has migrated. It exists so that migrating does not paint every
+# open pull request red first.
+#
 # It used to be one job on pull_request_target, holding the app's private key
 # beside a fork's checkout, and safe only for as long as nobody added a step
 # that ran something from `subject/`. Then checkout v7 began refusing that
@@ -16,16 +23,19 @@
 # the checkout, before a line was read. Splitting it makes the guarantee
 # structural instead of a comment asking to be obeyed.
 #
-# Do not add secrets to this file, and do not give this job write permissions.
+# Do not name a secret from a step on the pull_request path, and do not give
+# this job write permissions.
 name: Guardener scan
 
 on:
   workflow_call:
-    # Accepted and never referenced, so that a repository still carrying the
-    # one-workflow stub fails on the guard below — which says what to do —
-    # rather than on an unknown-secret error, which does not. A workflow_call
-    # secret reaches the job only where the job names it, and no step here names
-    # one.
+    # Used only by the legacy path below, which reports for itself. A
+    # workflow_call secret reaches the job only where a step names it, and the
+    # steps on the pull_request path name none — so the half that reads a fork
+    # still holds nothing, which is the guarantee this file is built on.
+    #
+    # The three model secrets are accepted and referenced nowhere at all; they
+    # are here so an unmigrated stub does not fail on an unknown-secret error.
     #
     # Delete these once every watched repository is on the two-workflow stub.
     secrets:
@@ -49,18 +59,37 @@ jobs:
     timeout-minutes: 25
     steps:
       # A repository still on the one-workflow stub calls this from
-      # pull_request_target, where the checkout below would take the base branch
-      # instead of the pull request and report "no findings" for every change.
-      # Failing here is loud and says what to fix; scanning the wrong tree is
-      # silent and says a pull request is clean when nothing read it.
-      - name: Refuse a trigger this half cannot serve
-        if: github.event_name != 'pull_request'
+      # pull_request_target, and keeps the behaviour it had: check out the head
+      # explicitly, run the gate in one pass, post from here. It is not the
+      # shape this file is for, but refusing it would paint every open pull
+      # request in every repository red until each one migrated — including the
+      # pull request doing the migrating, whose own red mark comes from the base
+      # branch's workflow and not from anything it changed.
+      #
+      # Delete both `legacy` steps, and the secrets above, once every watched
+      # repository is on the two-workflow stub.
+      - name: Say which path this run is on
+        id: mode
         run: |
-          echo "The gate is in two halves now, and this one runs on pull_request." >&2
-          echo "Update .github/workflows/guardener.yml to trigger on pull_request" >&2
-          echo "and drop its secrets, then add guardener-report.yml beside it." >&2
-          echo "Both templates live in suiflex/Guardener/templates/workflows/." >&2
-          exit 1
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "legacy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "legacy=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::This repository is still on the single-workflow gate, so pull requests from forks are not scanned. Move .github/workflows/guardener.yml to pull_request and add guardener-report.yml beside it; both templates are in suiflex/Guardener/templates/workflows/."
+          fi
+
+      # Only the legacy path has credentials, and only because it reports for
+      # itself. The path this file is actually for holds none — that is the
+      # whole point of the split, and adding a token to it would undo it.
+      - id: legacy-token
+        if: steps.mode.outputs.legacy == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.private_key }}
+          owner: suiflex
+          permission-checks: write
+          permission-pull-requests: write
 
       # The branch under analysis, and the tool, in separate directories.
       # Nesting the tool inside the checkout would put Guardener's own source
@@ -70,7 +99,22 @@ jobs:
       # Full history because the gate measures the pull request against its
       # merge base, not against its tip.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.mode.outputs.legacy == 'false'
         with:
+          path: subject
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The legacy path has to name the head, because pull_request_target checks
+      # out the base branch by default and scanning that would call every pull
+      # request clean. A fork still fails here, on checkout v7's refusal — which
+      # is the bug the two-workflow gate exists to fix, and which this path
+      # cannot fix without holding a fork's code beside the app's private key.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.mode.outputs.legacy == 'true'
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
           path: subject
           fetch-depth: 0
           persist-credentials: false
@@ -120,6 +164,7 @@ jobs:
       # the organization. Do not add a step that runs the checkout's scripts,
       # and do not drop the untrusted flag.
       - name: Run the gate
+        if: steps.mode.outputs.legacy == 'false'
         env:
           # True for every branch that is not in this repository. Read from the
           # event rather than from the checkout, which a fork controls.
@@ -137,6 +182,25 @@ jobs:
             --findings-out findings/findings.json \
             "$@"
 
+      # The legacy path: one pass that reports for itself, as this workflow did
+      # before it was split. Deleted with the rest of that path.
+      - name: Run the gate and report it
+        if: steps.mode.outputs.legacy == 'true'
+        env:
+          GUARDENER_TOKEN: ${{ steps.legacy-token.outputs.token }}
+          UNTRUSTED: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          if [ "$UNTRUSTED" = "true" ]; then set -- --untrusted; else set --; fi
+          tool/target/release/guardener check \
+            --root subject \
+            --registry tool/config/repositories.toml \
+            --organization-default tool/config/forgeguard.toml \
+            --repo "${{ github.repository }}" \
+            --pr "${{ github.event.pull_request.number }}" \
+            --head-sha "${{ github.event.pull_request.head.sha }}" \
+            --base FETCH_HEAD \
+            "$@"
+
       # The pull request number rides along in its own file. report.yml is woken
       # by workflow_run, whose payload names the workflow and the commit but not
       # the pull request, and asking the API for it is a lookup that can answer
@@ -146,9 +210,11 @@ jobs:
       # repository, which commit — it takes from its own event, so that a fork
       # cannot aim the result somewhere else by writing a different file here.
       - name: Record the pull request number
+        if: steps.mode.outputs.legacy == 'false'
         run: echo "${{ github.event.pull_request.number }}" > findings/pr-number
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.mode.outputs.legacy == 'false'
         with:
           name: guardener-findings
           path: findings/
