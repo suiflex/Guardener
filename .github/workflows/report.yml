@@ -1,0 +1,105 @@
+# The reporting half of the ForgeGuard gate: it turns a scan into a check run
+# and a comment. Repositories call this; they do not copy it.
+#
+# workflow_run, because this is the half that holds credentials and a pull
+# request from a fork runs with a read-only token — and a read-only token cannot
+# create the check run that is the whole point of the gate. Waking on the
+# scan's completion instead puts this job in the base repository's context, with
+# the app credentials it needs.
+#
+# It never checks the pull request out. That is the guarantee: check.yml reads
+# the branch and holds nothing, this one holds everything and reads no branch.
+# Do not add a checkout of the pull request here, and do not run anything that
+# came out of the artifact.
+#
+# One operational cost, worth knowing before editing: GitHub only ever runs the
+# copy of a workflow_run workflow that is on the default branch. A change here
+# cannot be tested from a pull request — it takes effect when it merges.
+name: Guardener report
+
+on:
+  workflow_call:
+    secrets:
+      app_id:
+        required: true
+      private_key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    # A scan that failed produced no findings to report, and saying nothing is
+    # better than reporting an empty gate as though it had passed.
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.app_id }}
+          private-key: ${{ secrets.private_key }}
+          owner: suiflex
+          # Narrowed here rather than relying on the app's organization-wide
+          # grant, so a mistake in this workflow cannot reach anything else.
+          permission-checks: write
+          permission-pull-requests: write
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: guardener-findings
+          path: findings
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ steps.app-token.outputs.token }}
+
+      # The scan wrote this, and the scan ran on a fork's code. Everything else
+      # the report needs comes from this workflow's own event; the number is the
+      # one thing that does not, so it is checked rather than trusted. Anything
+      # but digits and the job stops here.
+      - name: Read the pull request number
+        id: pr
+        run: |
+          number="$(cat findings/pr-number)"
+          case "$number" in
+            ''|*[!0-9]*)
+              echo "the findings artifact does not name a pull request" >&2
+              exit 1
+              ;;
+          esac
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: suiflex/Guardener
+          path: tool
+          persist-credentials: false
+
+      # Same pinning reasoning as the scan workflow: this commit is the head of
+      # `stable`, and the toolchain is named explicitly so the version is
+      # readable here rather than inferred from a hash.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: tool
+
+      # Built twice per pull request now, once in each half. The cache makes the
+      # second build cheap; publish release binaries when it stops being.
+      - name: Build Guardener
+        working-directory: tool
+        run: cargo build --release --locked
+
+      # The commit comes from this workflow's event rather than from the
+      # artifact, so a fork cannot aim a check run at a commit it does not own.
+      - name: Report the findings
+        env:
+          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          tool/target/release/guardener report \
+            --findings findings/findings.json \
+            --repo "${{ github.repository }}" \
+            --pr "${{ steps.pr.outputs.number }}" \
+            --head-sha "${{ github.event.workflow_run.head_sha }}"
