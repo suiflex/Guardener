@@ -102,24 +102,54 @@ in [INSTALL.md](INSTALL.md).
 
 ## Turning the gate on for a repository
 
-Add this to the repository as `.github/workflows/guardener.yml` — or let
-`guardener hygiene --fix` open the pull request that adds it:
+The gate is two workflows, because one half reads the pull request and the
+other half holds the credentials, and a fork's pull request must not meet both
+at once. Add both — or let `guardener hygiene --fix` open the pull request that
+adds them.
+
+`.github/workflows/guardener.yml` reads the branch and holds nothing:
 
 ```yaml
 name: Guardener
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
 
 jobs:
   forgeguard:
     if: github.repository_owner == 'suiflex'
     uses: suiflex/Guardener/.github/workflows/check.yml@main
+```
+
+`.github/workflows/guardener-report.yml` reports what it found, and never
+checks the branch out:
+
+```yaml
+name: Guardener report
+
+on:
+  workflow_run:
+    workflows: ["Guardener"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.repository_owner == 'suiflex'
+    uses: suiflex/Guardener/.github/workflows/report.yml@main
     secrets:
       app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
       private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
 ```
+
+A change to the reporting half only takes effect once it is on the default
+branch: GitHub never runs a pull request's copy of a `workflow_run` workflow.
 
 ## Running it by hand
 
