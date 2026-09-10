@@ -57,6 +57,36 @@ enum Command {
         /// Print what would be written to GitHub, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Write the findings here and report nothing, for `report` to pick up
+        /// later. Splits the gate in two so the half that reads an untrusted
+        /// branch can run without credentials: no GitHub token is needed, and
+        /// --repo, --pr and --head-sha go unused. The reporting half is told
+        /// those by its own workflow event rather than by this file, so a fork
+        /// cannot choose where its result is posted.
+        #[arg(long)]
+        findings_out: Option<PathBuf>,
+    },
+
+    /// Report findings that `check --findings-out` produced earlier.
+    ///
+    /// The half of the gate that holds credentials. It never sees the branch,
+    /// which is what lets the scanning half check out a fork safely.
+    Report {
+        /// The findings file written by `check --findings-out`.
+        #[arg(long)]
+        findings: PathBuf,
+        /// The repository as owner/name.
+        #[arg(long)]
+        repo: String,
+        /// The pull request number.
+        #[arg(long)]
+        pr: u64,
+        /// The commit the check run is reported against.
+        #[arg(long)]
+        head_sha: String,
+        /// Print what would be written to GitHub, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Check every watched repository still carries the organization standard.
@@ -137,20 +167,39 @@ fn main() -> Result<()> {
             base,
             untrusted,
             dry_run,
+            findings_out,
+        } => {
+            let request = check::Request {
+                root: &root,
+                registry: &registry,
+                organization_default: &organization_default,
+                repo: &repo,
+                pull_request: pr,
+                head_sha: &head_sha,
+                base: &base,
+                untrusted,
+            };
+            match findings_out {
+                // Deliberately before the token is asked for: this half must be
+                // runnable by a job that holds no credentials at all.
+                Some(path) => check::scan(&request)?.write(&path),
+                None => check::run(&Client::new(token()?, dry_run), &request),
+            }
+        }
+        Command::Report {
+            findings,
+            repo,
+            pr,
+            head_sha,
+            dry_run,
         } => {
             let client = Client::new(token()?, dry_run);
-            check::run(
+            check::publish(
                 &client,
-                &check::Request {
-                    root: &root,
-                    registry: &registry,
-                    organization_default: &organization_default,
-                    repo: &repo,
-                    pull_request: pr,
-                    head_sha: &head_sha,
-                    base: &base,
-                    untrusted,
-                },
+                &repo,
+                pr,
+                &head_sha,
+                &check::Findings::read(&findings)?,
             )
         }
         Command::Review {

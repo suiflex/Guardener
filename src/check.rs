@@ -5,13 +5,22 @@
 //! looking, and its conclusion is what a branch protection rule can require.
 //! The comment answers "what is wrong with this pull request" in one place for
 //! someone reading the conversation rather than the diff.
+//!
+//! Reading and reporting are separable on purpose. [`scan`] needs the branch and
+//! no credentials; [`publish`] needs credentials and not the branch. Keeping
+//! them apart is what lets a fork's pull request be analysed in a job that holds
+//! no secrets at all, with the reporting done afterwards by one that never
+//! checks the fork out — see the workflows. [`Findings`] is what travels between
+//! them.
 
 use std::fmt::Write as _;
+use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use forgeguard_core::model::{GateReport, GateStatus, Severity};
 use forgeguard_core::run_changed_gate;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{self, Registry};
 use crate::github::{split_repo, Annotation, CheckRun, Client, ANNOTATION_LIMIT};
@@ -35,8 +44,40 @@ pub struct Request<'a> {
     pub untrusted: bool,
 }
 
-pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
-    let (owner, name) = split_repo(request.repo)?;
+/// What [`scan`] produces and [`publish`] reports, and the only thing that
+/// crosses between them.
+///
+/// It carries the gate's own output and nothing taken from the branch beyond
+/// it. In particular there is no repository, pull request or commit here: those
+/// name where the result is posted, and a fork must not get to choose them. The
+/// reporting side is told them by the workflow event instead.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Findings {
+    pub report: GateReport,
+    /// Carried so the summary can say why the quality commands were skipped.
+    pub untrusted: bool,
+}
+
+impl Findings {
+    pub fn write(&self, path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("could not create {}", parent.display()))?;
+        }
+        let json = serde_json::to_string(self).context("could not serialise the findings")?;
+        fs::write(path, json).with_context(|| format!("could not write {}", path.display()))
+    }
+
+    pub fn read(path: &Path) -> Result<Self> {
+        let json = fs::read_to_string(path)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        serde_json::from_str(&json)
+            .with_context(|| format!("{} is not a findings file", path.display()))
+    }
+}
+
+/// Run the gate. Reads the branch; needs no credentials.
+pub fn scan(request: &Request<'_>) -> Result<Findings> {
     let registry = Registry::load(request.registry)?;
     let config = config::resolve(
         request.root,
@@ -48,20 +89,50 @@ pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
     let report = run_changed_gate(request.root, &config, request.untrusted, Some(request.base))
         .context("the ForgeGuard gate failed to run")?;
 
+    Ok(Findings {
+        report,
+        untrusted: request.untrusted,
+    })
+}
+
+/// Report a scan. Needs credentials; never looks at the branch.
+pub fn publish(
+    client: &Client,
+    repo: &str,
+    pull_request: u64,
+    head_sha: &str,
+    findings: &Findings,
+) -> Result<()> {
+    let (owner, name) = split_repo(repo)?;
+    let report = &findings.report;
+
     client.create_check_run(
         owner,
         name,
         &CheckRun {
             name: CHECK_NAME,
-            head_sha: request.head_sha,
+            head_sha,
             conclusion: conclusion(report.status),
-            title: &title(&report),
-            summary: &summary(&report, request.untrusted),
-            annotations: &annotations(&report),
+            title: &title(report),
+            summary: &summary(report, findings.untrusted),
+            annotations: &annotations(report),
         },
     )?;
 
-    client.upsert_comment(owner, name, request.pull_request, MARKER, comment(&report))
+    client.upsert_comment(owner, name, pull_request, MARKER, comment(report))
+}
+
+/// Scan and report in one process. What a branch inside the organization uses,
+/// and what running the gate by hand does.
+pub fn run(client: &Client, request: &Request<'_>) -> Result<()> {
+    let findings = scan(request)?;
+    publish(
+        client,
+        request.repo,
+        request.pull_request,
+        request.head_sha,
+        &findings,
+    )
 }
 
 /// A blocked gate fails the check; a gate that only found warnings is reported
@@ -270,6 +341,33 @@ mod tests {
         assert_eq!(annotated[0].level, "warning");
         assert_eq!(annotated[1].end_line, 3);
         assert_eq!(annotated[1].level, "failure");
+    }
+
+    #[test]
+    fn a_findings_file_survives_the_trip_between_the_two_halves() {
+        // The scanning half writes this and exits; the reporting half is a
+        // different process on a different runner, so anything the report needs
+        // has to be in the file rather than in memory.
+        let findings = Findings {
+            report: report(
+                GateStatus::Blocked,
+                vec![finding("FG-SEC-001", Severity::Error, 7, None)],
+                vec![],
+            ),
+            untrusted: true,
+        };
+        let dir = std::env::temp_dir().join(format!("guardener-{}", std::process::id()));
+        let path = dir.join("findings.json");
+        findings.write(&path).expect("written");
+
+        let read = Findings::read(&path).expect("read back");
+        assert_eq!(read.report, findings.report);
+        // Without this the reporting half cannot say why the quality commands
+        // did not run, which is the one thing a fork's author needs told.
+        assert!(read.untrusted);
+        assert!(summary(&read.report, read.untrusted).contains("outside the organization"));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
