@@ -66,6 +66,15 @@ const EXPECTED: &[Expected] = &[
         accepted: &[".github/workflows/guardener.yml"],
         contents: include_str!("../templates/workflows/guardener.yml"),
     },
+    // The gate's other half, which turns a scan into a check run. Separate for
+    // the same reason the review below is, and the reason applies twice over
+    // here: this one has to reach every repository that already carries the
+    // gate, and `--fix` cannot edit the file it would otherwise belong in.
+    Expected {
+        check: "gate-report-workflow",
+        accepted: &[".github/workflows/guardener-report.yml"],
+        contents: include_str!("../templates/workflows/guardener-report.yml"),
+    },
     // A separate file rather than another trigger on the gate's workflow, and
     // that is forced rather than chosen: `--fix` may only add, never edit, so a
     // capability bolted onto guardener.yml could not reach the repositories

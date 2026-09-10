@@ -1,28 +1,38 @@
-# The ForgeGuard gate, run on a pull request in any repository the organization
-# watches. Repositories call this; they do not copy it.
+# The scanning half of the ForgeGuard gate, run on a pull request in any
+# repository the organization watches. Repositories call this; they do not copy
+# it.
 #
-# pull_request_target, not pull_request: a pull request from a fork runs with a
-# read-only token, and a read-only token cannot create the check run that is the
-# whole point of this workflow.
+# pull_request, and no secrets. This job checks out the pull request's own
+# branch, so on a fork it holds code its author controls — which is safe here
+# only because there is nothing in the job worth reaching. It has a read-only
+# token, no app credentials, and it writes its result to an artifact rather than
+# to GitHub. The half that holds credentials is report.yml, and that one never
+# checks the branch out.
 #
-# That choice is only safe because this job never executes anything from the
-# branch it analyses. Guardener is built from this repository, and the analysis
-# itself is a tree-sitter parse — it reads source and runs none of it. The one
-# thing that would execute the branch's own instructions is ForgeGuard's
-# configured quality commands, and `--untrusted` turns those off for every
-# branch that does not come from this repository. Do not add a step that runs
-# the checkout's scripts, and do not drop the untrusted flag.
-name: Guardener
+# It used to be one job on pull_request_target, holding the app's private key
+# beside a fork's checkout, and safe only for as long as nobody added a step
+# that ran something from `subject/`. Then checkout v7 began refusing that
+# combination outright and every outside contributor's pull request failed at
+# the checkout, before a line was read. Splitting it makes the guarantee
+# structural instead of a comment asking to be obeyed.
+#
+# Do not add secrets to this file, and do not give this job write permissions.
+name: Guardener scan
 
 on:
   workflow_call:
+    # Accepted and never referenced, so that a repository still carrying the
+    # one-workflow stub fails on the guard below — which says what to do —
+    # rather than on an unknown-secret error, which does not. A workflow_call
+    # secret reaches the job only where the job names it, and no step here names
+    # one.
+    #
+    # Delete these once every watched repository is on the two-workflow stub.
     secrets:
       app_id:
-        required: true
+        required: false
       private_key:
-        required: true
-      # The review is opt-in per repository: leave these out and the step below
-      # says so and stops. Nothing about the gate depends on them.
+        required: false
       model_url:
         required: false
       model_key:
@@ -34,20 +44,23 @@ permissions:
   contents: read
 
 jobs:
-  forgeguard:
+  scan:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.app_id }}
-          private-key: ${{ secrets.private_key }}
-          owner: suiflex
-          # Narrowed here rather than relying on the app's organization-wide
-          # grant, so a mistake in this workflow cannot reach anything else.
-          permission-checks: write
-          permission-pull-requests: write
+      # A repository still on the one-workflow stub calls this from
+      # pull_request_target, where the checkout below would take the base branch
+      # instead of the pull request and report "no findings" for every change.
+      # Failing here is loud and says what to fix; scanning the wrong tree is
+      # silent and says a pull request is clean when nothing read it.
+      - name: Refuse a trigger this half cannot serve
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "The gate is in two halves now, and this one runs on pull_request." >&2
+          echo "Update .github/workflows/guardener.yml to trigger on pull_request" >&2
+          echo "and drop its secrets, then add guardener-report.yml beside it." >&2
+          echo "Both templates live in suiflex/Guardener/templates/workflows/." >&2
+          exit 1
 
       # The branch under analysis, and the tool, in separate directories.
       # Nesting the tool inside the checkout would put Guardener's own source
@@ -58,8 +71,6 @@ jobs:
       # merge base, not against its tip.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
           path: subject
           fetch-depth: 0
           persist-credentials: false
@@ -102,9 +113,14 @@ jobs:
         working-directory: tool
         run: cargo build --release --locked
 
+      # No token: `--findings-out` is the mode that reports nothing and asks for
+      # no credentials. The scan itself is a tree-sitter parse, and `--untrusted`
+      # turns off ForgeGuard's configured quality commands — shell commands read
+      # from the checkout's own configuration — for every branch from outside
+      # the organization. Do not add a step that runs the checkout's scripts,
+      # and do not drop the untrusted flag.
       - name: Run the gate
         env:
-          GUARDENER_TOKEN: ${{ steps.app-token.outputs.token }}
           # True for every branch that is not in this repository. Read from the
           # event rather than from the checkout, which a fork controls.
           UNTRUSTED: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
@@ -118,14 +134,22 @@ jobs:
             --pr "${{ github.event.pull_request.number }}" \
             --head-sha "${{ github.event.pull_request.head.sha }}" \
             --base FETCH_HEAD \
+            --findings-out findings/findings.json \
             "$@"
 
-      # The model's second opinion used to run here, on every push. It does not
-      # any more: it is asked by name with a `/review` comment, and swept for
-      # weekly by review-sweep.yml. A review nobody asked for, re-run on every
-      # push to every pull request in the organization, was paying for far more
-      # readings than anyone read.
+      # The pull request number rides along in its own file. report.yml is woken
+      # by workflow_run, whose payload names the workflow and the commit but not
+      # the pull request, and asking the API for it is a lookup that can answer
+      # with more than one.
       #
-      # This job is the gate and only the gate. The model secrets are still
-      # accepted above so that a repository's stub needs no edit when it is
-      # wired up for `/review`.
+      # Only the number. Everything else the reporting half needs — which
+      # repository, which commit — it takes from its own event, so that a fork
+      # cannot aim the result somewhere else by writing a different file here.
+      - name: Record the pull request number
+        run: echo "${{ github.event.pull_request.number }}" > findings/pr-number
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: guardener-findings
+          path: findings/
+          retention-days: 1

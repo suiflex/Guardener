@@ -147,32 +147,65 @@ Two separate switches.
 **The hygiene sweep** covers whatever is listed in
 `config/repositories.toml`. Add a line and it is covered on the next run.
 
-**The gate and the review** run only where the repository asks for them. Add
-`.github/workflows/guardener.yml` to that repository — or let `guardener
-hygiene --fix` open the pull request that adds it:
+**The gate and the review** run only where the repository asks for them. The
+gate is two files, and `guardener hygiene --fix` opens the pull request that
+adds them.
+
+`.github/workflows/guardener.yml` reads the pull request:
 
 ```yaml
 name: Guardener
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
 
 jobs:
   forgeguard:
     if: github.repository_owner == 'suiflex'
     uses: suiflex/Guardener/.github/workflows/check.yml@main
+```
+
+`.github/workflows/guardener-report.yml` reports what it found:
+
+```yaml
+name: Guardener report
+
+on:
+  workflow_run:
+    workflows: ["Guardener"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.repository_owner == 'suiflex'
+    uses: suiflex/Guardener/.github/workflows/report.yml@main
     secrets:
       app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
       private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
-      model_url: ${{ secrets.GUARDENER_MODEL_URL }}
-      model_key: ${{ secrets.GUARDENER_MODEL_KEY }}
-      model: ${{ secrets.GUARDENER_MODEL }}
 ```
 
-The model secrets are listed for compatibility and are unused: `check.yml` runs
-the gate and nothing else. Nothing reviews on a push — the model is asked by a
-`/review` comment or by the weekly sweep, both below.
+Two halves because a pull request from a fork must not meet the branch and the
+credentials in the same job. The first holds no secrets, so a fork's code has
+nothing to reach; the second holds them and never checks the branch out. It
+wakes on `workflow_run` because a fork's `pull_request` token is read-only, and
+a read-only token cannot create a check run.
+
+Two things follow that are easy to trip over. A change to the reporting half
+only takes effect once it is on the default branch — GitHub never runs a pull
+request's copy of a `workflow_run` workflow. And a repository still carrying the
+older single-file stub fails the gate deliberately, with a message naming these
+two files: under `pull_request_target` the scanning half would read the base
+branch and report every pull request as clean.
+
+Nothing reviews on a push — the model is asked by a `/review` comment or by the
+weekly sweep, both below.
 
 **Asking for a review by hand** takes a second file,
 `.github/workflows/review.yml`, which `guardener hygiene --fix` adds alongside
@@ -187,7 +220,7 @@ The full file, with the reasoning beside each condition, is
 A second file rather than another trigger on the one above, because `--fix` may
 only add and never edit: a capability bolted onto `guardener.yml` could not
 reach the repositories that already have one without a hand-written pull request
-to each.
+to each. The gate's reporting half is separate for the same reason.
 
 ### Why this file has to exist in every repository
 
