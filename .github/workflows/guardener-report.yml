@@ -1,0 +1,26 @@
+# Guardener reports on itself: the second half of its own gate.
+#
+# Unlike the scanning half, this one cannot use a local reference and be tested
+# by the pull request that changes it — GitHub only ever runs the default
+# branch's copy of a workflow_run workflow, so a change here takes effect when
+# it merges and not before. The local reference is kept anyway, so that what
+# runs on main is this repository's own copy.
+name: Guardener report
+
+on:
+  workflow_run:
+    # The name of the gate's scanning workflow, which is what its run is called
+    # even though the work happens in the reusable workflow it calls.
+    workflows: ["Guardener"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.repository_owner == 'suiflex'
+    uses: ./.github/workflows/report.yml
+    secrets:
+      app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
+      private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}

@@ -2,20 +2,21 @@
 #
 # The reference is local rather than `suiflex/Guardener/...@main`, so a change
 # to the gate is tested by the pull request that makes it instead of only after
-# it has already landed on main.
+# it has already landed on main. That holds for this half; the reporting half
+# cannot be tested that way at all, because GitHub only ever runs the default
+# branch's copy of a workflow_run workflow.
+#
+# The scanning half: reads the branch, holds nothing. See check.yml.
 name: Guardener
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
 
 jobs:
   forgeguard:
     if: github.repository_owner == 'suiflex'
     uses: ./.github/workflows/check.yml
-    secrets:
-      app_id: ${{ secrets.GUARDENER_BOT_APP_ID }}
-      private_key: ${{ secrets.GUARDENER_BOT_PRIVATE_KEY }}
-      model_url: ${{ secrets.GUARDENER_MODEL_URL }}
-      model_key: ${{ secrets.GUARDENER_MODEL_KEY }}
-      model: ${{ secrets.GUARDENER_MODEL }}
