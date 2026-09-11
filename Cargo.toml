@@ -2,7 +2,7 @@
 name = "guardener"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["SuiFlex"]
 repository = "https://github.com/suiflex/Guardener"
 description = "Runs the suiflex engineering standard across the organization's repositories"

@@ -271,3 +271,7 @@ Inline review comments. The model already reports a file and a line, but they
 are rendered as text: placing a remark on the wrong line is worse than placing
 it in a list, and the diff-position arithmetic that avoids that has not been
 written.
+
+## License
+
+Apache-2.0
