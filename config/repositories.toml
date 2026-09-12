@@ -41,3 +41,6 @@ name = "suiflex/SafeHell"
 
 [[repository]]
 name = "suiflex/companion"
+
+[[repository]]
+name = "suiflex/FluxGuard"
