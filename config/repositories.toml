@@ -47,3 +47,6 @@ name = "suiflex/FluxGuard"
 
 [[repository]]
 name = "suiflex/kurir"
+
+[[repository]]
+name = "suiflex/arsy-code"
