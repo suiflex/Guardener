@@ -8,10 +8,10 @@
 #
 # What is left here is what is worth arguing about in review.
 
-# Above this, the review is skipped and says so. A model asked to read four
-# thousand changed lines returns paragraphs rather than findings, and a review
-# nobody reads still costs money to produce.
-max_changed_lines = 1500
+# Above this, the review is skipped and says so. A model asked to read more
+# than eight thousand changed lines returns paragraphs rather than findings, and
+# a review nobody reads still costs money to produce.
+max_changed_lines = 8000
 
 # Files whose diffs carry no judgement worth paying for. A pattern beginning
 # `*.` matches a suffix; anything else matches anywhere in the path.
