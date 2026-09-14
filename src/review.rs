@@ -42,7 +42,7 @@ pub struct Settings {
 }
 
 fn default_max_changed_lines() -> usize {
-    1500
+    8000
 }
 
 /// One thing the model wants to say. `line` is advisory — it is rendered as
