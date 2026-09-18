@@ -349,7 +349,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -396,7 +396,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "forgeguard-core"
 version = "0.10.0"
-source = "git+https://github.com/suiflex/ForgeGuard?tag=v0.16.0#b52284fb8a22aada533c7e42deb210ba09616821"
+source = "git+https://github.com/suiflex/ForgeGuard?tag=v0.17.0#781a453b0d5746bd6c878568ff42bed9bfa45462"
 dependencies = [
  "anyhow",
  "ignore",
@@ -872,8 +872,9 @@ dependencies = [
 
 [[package]]
 name = "kurir"
-version = "0.1.0"
-source = "git+https://github.com/suiflex/kurir?rev=aa70c4113b05656f424bfd9f335276e80a3223dd#aa70c4113b05656f424bfd9f335276e80a3223dd"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1dd53cce0a0203e4435cc0afbf6325d685f1a4946db56437f122f95b27b4b184"
 dependencies = [
  "clap",
  "reqwest",
@@ -1071,7 +1072,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1239,7 +1240,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1503,7 +1504,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2313,7 +2314,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
