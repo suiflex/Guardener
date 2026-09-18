@@ -14,7 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 ureq = { version = "3.1", features = ["json"] }
-forgeguard-core = { git = "https://github.com/suiflex/ForgeGuard", tag = "v0.16.0" }
+forgeguard-core = { git = "https://github.com/suiflex/ForgeGuard", tag = "v0.17.0" }
 
 [dev-dependencies]
 tempfile = "3.10"
